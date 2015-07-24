@@ -23,7 +23,8 @@ let g:airline#extensions#tabline#enabled = 1
 
 map > <C-W>>
 map < <C-W><
-
+map _ <C-W>- 
+map + <C-W>+
 
 
 map <C-n> :NERDTreeToggle<CR>
