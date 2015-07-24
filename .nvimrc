@@ -21,6 +21,10 @@ let g:syntastic_asciidoc_asciidoc_exec = 'asciidoctor'
 let g:airline#extensions#tabline#enabled = 1
 
 
+map > <C-W>>
+map < <C-W><
+
+
 
 map <C-n> :NERDTreeToggle<CR>
 map <C-b> :bn<CR>
