@@ -10,6 +10,10 @@ syntax on
 set nu
 colorscheme elflord
 
+set wildmenu
+set wildmode=longest:full,full
+nnoremap gb :b<Space><tab>
+
 set statusline+=%#warningmsg#
 set statusline+=%{SyntasticStatuslineFlag()}
 set statusline+=%*
@@ -31,10 +35,16 @@ map < <C-W><
 map _ <C-W>- 
 map + <C-W>+
 
+" ------------------------------- Navigation -------------------------------
+nnoremap <C-n> :NERDTreeToggle<CR>
 
-map <C-n> :NERDTreeToggle<CR>
-map <C-b> :tabn<CR>
-map <C-v> :tabp<CR>
+nnoremap <C-b> :bn<CR>
+nnoremap <C-v> :bp<CR>
+
+nnoremap tl :tabnext<CR>
+nnoremap th :tabprev<CR>
+nnoremap tn :tabnew<CR>
+
 
 " ------------------------------- Vim-Plug -------------------------------
 set rtp+=~/.nvim/autoload/plug.vim
