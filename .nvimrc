@@ -1,18 +1,32 @@
+" ------------------------------- Vim-Plug -------------------------------
+set rtp+=~/.nvim/autoload/plug.vim
+call plug#begin()
+Plug 'junegunn/vim-easy-align'
+Plug 'scrooloose/syntastic'
+Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
+Plug 'bling/vim-airline'
+Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
+Plug 'flazz/vim-colorschemes'
+call plug#end()
+
 set nocompatible
 filetype off
+
+"let g:molokai_original = 1
+"let g:rehash256 = 1
 
 set tabstop=4
 set shiftwidth=4
 set expandtab
 set hidden
+set undofile
 
 syntax on
 set nu
-colorscheme elflord
+colorscheme molokai
 
 set wildmenu
 set wildmode=longest:full,full
-nnoremap gb :b<Space><tab>
 
 set statusline+=%#warningmsg#
 set statusline+=%{SyntasticStatuslineFlag()}
@@ -25,15 +39,13 @@ let g:syntastic_check_on_wq = 0
 let g:syntastic_error_symbol = "✗"
 let g:syntastic_warning_symbol = "⚠"
 
-
 let g:syntastic_asciidoc_asciidoc_exec = 'asciidoctor'
 let g:airline#extensions#tabline#enabled = 1
 
+"----regex----"
+nnoremap / /\j
+vnoremap / /\v
 
-map > <C-W>>
-map < <C-W><
-map _ <C-W>- 
-map + <C-W>+
 
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
@@ -45,15 +57,13 @@ nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>
 nnoremap tn :tabnew<CR>
 
+map > <C-W>>
+map < <C-W><
+map _ <C-W>- 
+map + <C-W>+
 
-" ------------------------------- Vim-Plug -------------------------------
-set rtp+=~/.nvim/autoload/plug.vim
-call plug#begin()
-Plug 'junegunn/vim-easy-align'
-Plug 'scrooloose/syntastic'
-" NERD tree will be loaded on the first invocation of NERDTreeToggle command
-Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
-Plug 'bling/vim-airline'
-Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
-call plug#end()
+
+nnoremap j gj
+nnoremap k gk
+
 
