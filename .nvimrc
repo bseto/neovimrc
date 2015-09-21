@@ -62,12 +62,15 @@ map <C-j> <C-W>-
 map <C-k> <C-W>+
 
 nnoremap j gj
-nnoremap k gk
+nnoremap , gk
 
 let g:EasyMotion_smartcase = 1
-let g:EasyMotion_do_mapping = 1 " Disable default mappings
 
 map <Leader>s <Plug>(easymotion-s)
 map <Leader>j <Plug>(easymotion-j)
 map <Leader>k <Plug>(easymotion-k)
 map <Leader>w <Plug>(easymotion-w)
+map <Leader>b <Plug>(easymotion-b)
+map <Leader>e <Plug>(easymotion-e)
+map <Leader>f <Plug>(easymotion-f)
+map <Leader>/ <Plug>(easymotion-jumptoanywhere)
