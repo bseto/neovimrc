@@ -57,10 +57,10 @@ nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>
 nnoremap tn :tabnew<CR>
 
-map > <C-W>>
-map < <C-W><
-map _ <C-W>- 
-map + <C-W>+
+map <C-h> <C-W><
+map <C-l> <C-W>>
+map <C-j> <C-W>- 
+map <C-k> <C-W>+
 
 
 nnoremap j gj
