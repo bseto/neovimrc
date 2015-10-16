@@ -8,8 +8,10 @@ Plug 'bling/vim-airline'
 Plug 'easymotion/vim-easymotion'
 Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
 Plug 'flazz/vim-colorschemes'
+Plug 'dagwieers/asciidoc-vim'
+Plug 'kien/rainbow_parentheses.vim'
 call plug#end()
-" ------------------------------- Vim-Plug -------------------------------
+" ------------------------------- General -------------------------------
 set nocompatible
 filetype off
 
@@ -49,20 +51,12 @@ vnoremap / /\v
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
 
-nnoremap <C-b> :bn<CR>
-nnoremap <C-v> :bp<CR>
+nnoremap bl :bn<CR>
+nnoremap bh :bp<CR>
 
 nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>
 nnoremap tn :tabnew<CR>
-
-map <C-h> <C-W><
-map <C-l> <C-W>>
-map <C-j> <C-W>- 
-map <C-k> <C-W>+
-
-nnoremap j gj
-nnoremap , gk
 
 let g:EasyMotion_smartcase = 1
 
@@ -72,5 +66,28 @@ map <Leader>k <Plug>(easymotion-k)
 map <Leader>w <Plug>(easymotion-w)
 map <Leader>b <Plug>(easymotion-b)
 map <Leader>e <Plug>(easymotion-e)
-map <Leader>f <Plug>(easymotion-f)
 map <Leader>/ <Plug>(easymotion-jumptoanywhere)
+
+" ------------------------------- Buffer Resize -------------------------------
+map <C-h> <C-W><
+map <C-l> <C-W>>
+map <C-j> <C-W>- 
+map <C-k> <C-W>+
+
+" ------------------------------- Rainbow Parentheses -------------------------------
+let g:rbpt_colorpairs = [
+    \ ['brown',       'RoyalBlue3'],
+    \ ['Darkblue',    'SeaGreen3'],
+    \ ['darkgreen',   'firebrick3'],
+    \ ['darkcyan',    'RoyalBlue3'],
+    \ ['darkred',     'SeaGreen3'],
+    \ ['gray',        'RoyalBlue3'],
+    \ ['black',       'SeaGreen3'],
+    \ ['darkgreen',   'RoyalBlue3'],
+    \ ['darkcyan',    'SeaGreen3'],
+    \ ]
+let g:rbpt_max = 13
+au VimEnter * RainbowParenthesesToggle
+au Syntax * RainbowParenthesesLoadRound
+au Syntax * RainbowParenthesesLoadSquare
+au Syntax * RainbowParenthesesLoadBraces
