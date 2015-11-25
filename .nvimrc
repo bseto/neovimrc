@@ -20,6 +20,7 @@ set shiftwidth=4
 set expandtab
 set hidden
 set undofile
+set smartcase
 let mapleader=","
 
 syntax on
@@ -44,15 +45,15 @@ let g:syntastic_asciidoc_asciidoc_exec = 'asciidoctor'
 let g:airline#extensions#tabline#enabled = 1
 
 "----regex----"
-nnoremap / /\v
-vnoremap / /\v
+"nnoremap / /\c
+"vnoremap / /\c
 
 
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
 
-nnoremap bl :bn<CR>
-nnoremap bh :bp<CR>
+nnoremap <Tab> :bnext<CR>
+nnoremap <S-Tab> :bprevious<CR>
 
 nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>

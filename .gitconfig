@@ -1,0 +1,11 @@
+[core]
+	editor = vim
+[user]
+	name = Byron Seto
+	email = byron.seto@calgaryscientific.com
+[push]
+	default = matching
+[credential]
+	helper = cache --timeout 3600
+[alias]
+	tree = log --oneline --graph --decorate --all
