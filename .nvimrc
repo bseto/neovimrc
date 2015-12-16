@@ -10,6 +10,7 @@ Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
 Plug 'flazz/vim-colorschemes'
 Plug 'dagwieers/asciidoc-vim'
 Plug 'kien/rainbow_parentheses.vim'
+Plug 'scrooloose/nerdcommenter'
 call plug#end()
 " ------------------------------- General -------------------------------
 set nocompatible
@@ -22,6 +23,8 @@ set hidden
 set undofile
 set smartcase
 let mapleader=","
+
+inoremap jk <esc>
 
 syntax on
 set nu
@@ -44,16 +47,16 @@ let g:syntastic_warning_symbol = "⚠"
 let g:syntastic_asciidoc_asciidoc_exec = 'asciidoctor'
 let g:airline#extensions#tabline#enabled = 1
 
-"----regex----"
-"nnoremap / /\c
-"vnoremap / /\c
+" ------------------------------- Regex -------------------------------
+nnoremap / /\c
+vnoremap / /\c
 
 
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
 
-nnoremap <Tab> :bnext<CR>
-nnoremap <S-Tab> :bprevious<CR>
+nnoremap <Leader>d :bp<CR>
+nnoremap <Leader>f :bn<CR>
 
 nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>
