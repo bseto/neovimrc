@@ -8,9 +8,12 @@ Plug 'bling/vim-airline'
 Plug 'easymotion/vim-easymotion'
 Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
 Plug 'flazz/vim-colorschemes'
+Plug 'kien/ctrlp.vim'
 Plug 'dagwieers/asciidoc-vim'
 Plug 'kien/rainbow_parentheses.vim'
 Plug 'scrooloose/nerdcommenter'
+Plug 'majutsushi/tagbar'
+Plug 'rdnetto/YCM-Generator', { 'branch': 'stable'}
 call plug#end()
 " ------------------------------- General -------------------------------
 set nocompatible
@@ -46,6 +49,22 @@ let g:syntastic_warning_symbol = "⚠"
 
 let g:syntastic_asciidoc_asciidoc_exec = 'asciidoctor'
 let g:airline#extensions#tabline#enabled = 1
+" ------------------------------- Ctags -------------------------------
+
+"build tags of your own project with CTRL+F12      
+"map <C-F12> :!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<CR>      
+"let g:ycm_global_ycm_extra_conf= "~/.nvim/plugged/YouCompleteMe/third_party/ycmd/cpp/ycm/.ycm_extra-conf.py"
+noremap <F12> :!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<cr>      
+inoremap <F12> <Esc>:!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<cr> 
+
+set tags+=~/.nvim/tags/sdl2/tags,~/.nvim/tags/opencv/tags
+
+let g:marching_include_paths = [
+\    "/usr/include/x86_64-linux-gnu/c++/4.8/"
+\]
+
+
+
 
 " ------------------------------- Regex -------------------------------
 nnoremap / /\c
@@ -54,6 +73,7 @@ vnoremap / /\c
 
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
+nmap <C-m> :TagbarToggle<CR>
 
 nnoremap <Leader>d :bp<CR>
 nnoremap <Leader>f :bn<CR>
