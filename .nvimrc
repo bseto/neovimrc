@@ -53,18 +53,15 @@ let g:airline#extensions#tabline#enabled = 1
 
 "build tags of your own project with CTRL+F12      
 "map <C-F12> :!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<CR>      
-"let g:ycm_global_ycm_extra_conf= "~/.nvim/plugged/YouCompleteMe/third_party/ycmd/cpp/ycm/.ycm_extra-conf.py"
 noremap <F12> :!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<cr>      
 inoremap <F12> <Esc>:!ctags -R --c++-kinds=+p --fields=+iaS --extra=+q .<cr> 
 
-set tags+=~/.nvim/tags/sdl2/tags,~/.nvim/tags/opencv/tags
-
-let g:marching_include_paths = [
-\    "/usr/include/x86_64-linux-gnu/c++/4.8/"
-\]
-
-
-
+"set tags+=~/.nvim/tags/sdl2/tags,~/.nvim/tags/opencv/tags
+set tags+=~/.config/nvim/tags/tags_include
+set tags+=~/.config/nvim/tags/tags_local
+"let g:ycm_global_ycm_extra_conf = '/home/byron/Documents/TerminalFighter/.ycm_global_ycm_extra_conf.py'
+let g:ycm_collect_identifiers_from_tags_files = 1
+let g:ycm_extra_conf_globlist = ['.*']
 
 " ------------------------------- Regex -------------------------------
 nnoremap / /\c
