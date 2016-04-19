@@ -1,19 +1,20 @@
 " ------------------------------- Vim-Plug -------------------------------
 set rtp+=~/.nvim/autoload/plug.vim
 call plug#begin()
-Plug 'junegunn/vim-easy-align'
-Plug 'scrooloose/syntastic'
-Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
-Plug 'bling/vim-airline'
-Plug 'easymotion/vim-easymotion'
 Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
-Plug 'flazz/vim-colorschemes'
-Plug 'kien/ctrlp.vim'
+Plug 'bling/vim-airline'
 Plug 'dagwieers/asciidoc-vim'
+Plug 'easymotion/vim-easymotion'
+Plug 'flazz/vim-colorschemes'
+Plug 'junegunn/vim-easy-align'
+Plug 'kien/ctrlp.vim'
 Plug 'kien/rainbow_parentheses.vim'
-Plug 'scrooloose/nerdcommenter'
 Plug 'majutsushi/tagbar'
 Plug 'rdnetto/YCM-Generator', { 'branch': 'stable'}
+Plug 'scrooloose/nerdcommenter'
+Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
+Plug 'scrooloose/syntastic'
+Plug 'fatih/vim-go'
 call plug#end()
 " ------------------------------- General -------------------------------
 set nocompatible
@@ -30,6 +31,7 @@ let mapleader=","
 inoremap jk <esc>
 
 syntax on
+set relativenumber
 set nu
 colorscheme molokai
 
@@ -39,6 +41,11 @@ set wildmode=longest:full,full
 set statusline+=%#warningmsg#
 set statusline+=%{SyntasticStatuslineFlag()}
 set statusline+=%*
+
+" ------------------------------- Syntastic -------------------------------
+
+let g:syntastic_go_checkers = ['golint', 'govet', 'errcheck']
+let g:syntastic_mode_map = { 'mode': 'active', 'passive_filetypes': ['go'] }
 
 let g:syntastic_always_populate_loc_list = 1
 let g:syntastic_auto_loc_list = 1
