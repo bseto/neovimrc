@@ -44,6 +44,8 @@ set statusline+=%#warningmsg#
 set statusline+=%{SyntasticStatuslineFlag()}
 set statusline+=%*
 
+let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/Documents/Recruit-Resources/Development-Guide/Style-Guide/astylerc"'
+let b:formatters_c = ['custom_c']
 au BufWrite * :Autoformat " to AutoFormat at save
 
 " ------------------------------- Syntastic -------------------------------
@@ -79,6 +81,11 @@ nnoremap / /\c
 vnoremap / /\c
 
 
+" ------------------------------- aStyle -------------------------------
+augroup autocom
+    autocmd!
+    :au BufWrite * :Autoformat
+augroup END
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
 nmap <C-m> :TagbarToggle<CR>
