@@ -1,12 +1,22 @@
-
+set -o vi
 export PATH="$PATH:$HOME/.rvm/bin" # Add RVM to PATH for scripting
+export VISUAL=nvim
+export EDITOR="$VISUAL"
+
+#Alias ---------------------------------------------------
 alias grepp='perl ~/Documents/tools/grepp/grepp'
 alias ls='ls --color'
 alias hadoop='ssh bseto@136.159.79.112'
+alias seng521='ssh seng521@104.236.242.123'
+alias enel500='cd /home/byron/go/src/github.com/ENEL500'
+alias seng533='echo 54.202.37.175 54.244.107.138'
+alias solar='cd /home/byron/go/src/github.com/Epsilon-Telemetry-Server'
+#Alias ---------------------------------------------------
 
 export GOROOT=/usr/local/go
-export PATH=$PATH:usr/local/go/bin
-export GOPATH=~/golib
+export GOPATH=$HOME/go
+#export PATH=$PATH:usr/local/go/bin
+export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 
 if [ "$TERM" == "xterm" ]; then
     # No it isn't, it's gnome-terminal
@@ -34,3 +44,6 @@ if ! shopt -oq posix; then
         . /etc/bash_completion
     fi
 fi
+
+export HISTFILESIZE=
+export HISTSIZE=

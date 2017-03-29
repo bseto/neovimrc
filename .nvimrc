@@ -82,10 +82,10 @@ vnoremap / /\c
 
 
 " ------------------------------- aStyle -------------------------------
-augroup autocom
-    autocmd!
-    :au BufWrite * :Autoformat
-augroup END
+"augroup autocom
+"autocmd!
+":au BufWrite * :Autoformat
+"augroup END
 " ------------------------------- Navigation -------------------------------
 nnoremap <C-n> :NERDTreeToggle<CR>
 nmap <C-m> :TagbarToggle<CR>
