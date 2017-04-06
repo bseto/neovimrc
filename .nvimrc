@@ -16,6 +16,8 @@ Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
 Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
 Plug 'chiel92/vim-autoformat'
+Plug 'jceb/vim-orgmode'
+Plug 'tpope/vim-speeddating'
 
 call plug#end()
 " ------------------------------- General -------------------------------
