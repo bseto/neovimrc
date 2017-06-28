@@ -1,0 +1,8 @@
+* Tasks
+** TODO SENG 533 Presentation 
+   [2017-04-07 Fri]
+** TODO Practice Guitar 
+   [2017-04-06 Thu]
+** TODO 
+   [2017-04-06 Thu]
+   [[file:~/neovimrc/life.org::*Abstract][Abstract]]

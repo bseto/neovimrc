@@ -1,21 +1,79 @@
-* Resource
-** SpaceMacs Links
-   [[http://spacemacs.org/layers/+emacs/org/README.html#key-bindings][OrgMode KeyBindings]]
-   [[https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#vim-motions-with-avy][SpaceMacs KeyBindings]]
-   
-* SENG 533 Presentation 
-  SCHEDULED: <2017-04-07 Fri
-** >Notes on Report
-*** Abstract
-    - Pattern is a common solution to problems. 
-    - Patterns "capture expert knowledge" about best practices.
-    - Antipatterns document common mistakes as well as their solutions
-*** Introduction
-    - Patterns address the problem of "reinventing the wheel"
-    - Roots in the work of Christopher Alexander, an architect.
-      - Developed a pattern language for planning towns and buildings
-    - Recently, antipatterns have been documented. 
+* Resources
+** General SpaceMacs Links
+  [[http://spacemacs.org/layers/+emacs/org/README.html#key-bindings][OrgMode KeyBindings]]
+  [[http://spacemacs.org/layers/+lang/go/README.html][Golang]]
+  [[http://spacemacs.org/layers/+tags/gtags/README.html#key-bindings][Gtags Keybindings]]
+  [[https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#vim-motions-with-avy][SpaceMacs KeyBindings]]
+** Formal Methods Links
+   - https://en.wikipedia.org/wiki/SystemC
+   - Timed Automaton
+   - Mat Lab
+** Coding
+  [[https://cses.fi/book.html][Competitive Programmer's Handbook]]
+* Classes
+** SENGG 533
+   file:/home/byron/Documents/University/SENG533/notes.org
+** Formal Methods
+*** Final Exam
+    - Hard-copy notes only
+    - 4 Written questions
+    - 10 Multiple Choice
+    - Cover the whole semester
+      | Lecture | Subject                      |
+      |---------+------------------------------|
+      | 2       | Formal Requirement analyses  |
+      | 3/4     | RTPA notions and methodology |
+      | 5/6     | LDS                          |
+      | 7/8     | TSS                          |
+      | 9/11    | Z/OZ                         |
+      | 12      | Formal principles of SE      |
+      |---------+------------------------------|
+    - Potential Types of Questions
+      - Formal methods and formal principles of SE
+        - The general mathematical model of the software
+        - Cooperative team work organization
+        - Formal quality and quality insurance mechanisms
+      - Specify simple RTPA SMs
+      - Specify simple RTPA PMs
+      - Transform short specifications between RTPA and Z
+
+* Worship
+** 2017-04-09 Sarah Chan
+   DEADLINE: <2017-04-07 Fri>
+  Hi Everyone,
+  Here is the set for Sunday.  Practice will be Friday at 9:00pm... Please let me know if you can make it!
+    Grace is enough
+    https://www.youtube.com/watch?v=vpYtYYaTFGQ
+    [[https://www.youtube.com/watch?v=avu9W6IwLQ4][Tutorial]]
+
+    Jesus you alone
+    https://www.youtube.com/watch?v=EIEwNKwaipc
+
+    Touch the Sky
+    https://www.youtube.com/watch?v=y1RQciil7B0
+    [[https://www.youtube.com/watch?v=VIrRlRVHPu8][Tutorial]]
+
+    Ever be
+    https://www.youtube.com/watch?v=byEUIzfVLAs
+
+    Broken Vessel
+    https://www.youtube.com/watch?v=fiyYoe678yI
+    
+* Vacations
+** Vancouver 2017-06
+*** Schedule
+*** Places to go
+**** Aberdeen Center for breakfast - dinner works too
+***** Noodles, (right on the escalators)
+***** Fried Chicken
+**** Richmondnightmarket.com for nightmarkets
+**** Stanley Park in Vancouver
+**** Vancouver Aquarium
+**** Gas town
+**** Sushi Garden - by metro town - park by metro town and then walk.
+**** Yaohan Center shrimp wonton
+**** Shop at Parker Place
+**** capbridge
 
 
 
-  

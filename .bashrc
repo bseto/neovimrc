@@ -11,7 +11,7 @@ alias seng521='ssh seng521@104.236.242.123'
 alias enel500='cd /home/byron/go/src/github.com/ENEL500'
 alias seng533='echo 54.202.37.175 54.244.107.138'
 alias solar='cd /home/byron/go/src/github.com/Epsilon-Telemetry-Server'
-alias emacs='emacs -nw'
+alias cc='CXX="cc_args.py g++" cmake ..'
 #Alias ---------------------------------------------------
 
 export GOROOT=/usr/local/go
