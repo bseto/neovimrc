@@ -10,6 +10,9 @@
    - Mat Lab
 ** Coding
   [[https://cses.fi/book.html][Competitive Programmer's Handbook]]
+** Ryzen Build
+*** Virtualization
+**** https://forums.linuxmint.com/viewtopic.php?f=231&t=212692
 * Classes
 ** SENGG 533
    file:/home/byron/Documents/University/SENG533/notes.org
