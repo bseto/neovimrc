@@ -51,7 +51,6 @@ set statusline+=%*
 
 let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/Documents/Recruit-Resources/Development-Guide/Style-Guide/astylerc"'
 let b:formatters_c = ['custom_c']
-"au BufWrite * :Autoformat " to AutoFormat at save
 
 " ------------------------------- Syntastic -------------------------------
 
@@ -97,6 +96,9 @@ nmap <C-m> :TagbarToggle<CR>
 
 nnoremap <Leader>d :bp<CR>
 nnoremap <Leader>f :bn<CR>
+nnoremap <leader>gd :YcmCompleter GoTo<CR>
+nnoremap <leader>gi :YcmCompleter GoToInclude<CR>
+nnoremap <leader>gt :YcmCompleter GetType<CR>
 
 nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>
