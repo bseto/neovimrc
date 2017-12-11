@@ -1,6 +1,5 @@
 " ------------------------------- Vim-Plug -------------------------------
-set rtp+=~/.nvim/autoload/plug.vim
-call plug#begin()
+call plug#begin('~/.local.share/nvim/plugged')
 Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
 Plug 'bling/vim-airline'
 Plug 'dagwieers/asciidoc-vim'
@@ -18,9 +17,13 @@ Plug 'fatih/vim-go'
 Plug 'chiel92/vim-autoformat'
 Plug 'jceb/vim-orgmode'
 Plug 'tpope/vim-speeddating'
+Plug 'elzr/vim-json'
 
 call plug#end()
 " ------------------------------- General -------------------------------
+"COPY AND PASTE
+set clipboard+=unnamedplus
+
 set nocompatible
 filetype off
 
@@ -48,7 +51,7 @@ set statusline+=%*
 
 let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/Documents/Recruit-Resources/Development-Guide/Style-Guide/astylerc"'
 let b:formatters_c = ['custom_c']
-au BufWrite * :Autoformat " to AutoFormat at save
+"au BufWrite * :Autoformat " to AutoFormat at save
 
 " ------------------------------- Syntastic -------------------------------
 
