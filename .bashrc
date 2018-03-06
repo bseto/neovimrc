@@ -12,6 +12,7 @@ alias enel500='cd /home/byron/go/src/github.com/ENEL500'
 alias seng533='echo 54.202.37.175 54.244.107.138'
 alias solar='cd /home/byron/go/src/github.com/Epsilon-Telemetry-Server'
 alias cc='CXX="cc_args.py g++" cmake ..'
+alias cmake3='cmake'
 #Alias ---------------------------------------------------
 
 export GOROOT=/usr/local/go
@@ -48,3 +49,5 @@ fi
 
 export HISTFILESIZE=
 export HISTSIZE=
+
+[ -f ~/.fzf.bash ] && source ~/.fzf.bash

@@ -6,7 +6,7 @@ Plug 'dagwieers/asciidoc-vim'
 Plug 'easymotion/vim-easymotion'
 Plug 'flazz/vim-colorschemes'
 Plug 'junegunn/vim-easy-align'
-Plug 'kien/ctrlp.vim'
+"Plug 'kien/ctrlp.vim'
 Plug 'kien/rainbow_parentheses.vim'
 Plug 'majutsushi/tagbar'
 Plug 'rdnetto/YCM-Generator', { 'branch': 'stable'}
@@ -18,6 +18,9 @@ Plug 'chiel92/vim-autoformat'
 Plug 'jceb/vim-orgmode'
 Plug 'tpope/vim-speeddating'
 Plug 'elzr/vim-json'
+Plug 'JamshedVesuna/vim-markdown-preview'
+Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
+Plug 'junegunn/fzf.vim'
 
 call plug#end()
 " ------------------------------- General -------------------------------
@@ -34,11 +37,11 @@ set hidden
 set undofile
 set smartcase
 let mapleader=","
+set colorcolumn=80,100
 
 inoremap jk <esc>
 
 syntax on
-set relativenumber
 set nu
 colorscheme molokai
 
@@ -51,6 +54,8 @@ set statusline+=%*
 
 let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/Documents/Recruit-Resources/Development-Guide/Style-Guide/astylerc"'
 let b:formatters_c = ['custom_c']
+let vim_markdown_preview_hotkey='<C-m>'
+let vim_markdown_preview_github=1
 
 " ------------------------------- Syntastic -------------------------------
 
@@ -91,6 +96,13 @@ vnoremap / /\c
 ":au BufWrite * :Autoformat
 "augroup END
 " ------------------------------- Navigation -------------------------------
+
+let g:ctrlp_cache_dir = $HOME . '/.cache/ctrlp'
+
+if executable('ag')
+  let g:ctrlp_user_command = 'ag %s -l --nocolor -g ""'
+endif
+
 nnoremap <C-n> :NERDTreeToggle<CR>
 nmap <C-m> :TagbarToggle<CR>
 
@@ -137,3 +149,13 @@ au VimEnter * RainbowParenthesesToggle
 au Syntax * RainbowParenthesesLoadRound
 au Syntax * RainbowParenthesesLoadSquare
 au Syntax * RainbowParenthesesLoadBraces
+
+
+" ------------------------------- fzf -------------------------------
+
+map <C-p> :Files<CR>
+let g:fzf_buffers_jump = 1
+
+
+
+
