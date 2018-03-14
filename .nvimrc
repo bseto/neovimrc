@@ -8,6 +8,7 @@ Plug 'flazz/vim-colorschemes'
 Plug 'junegunn/vim-easy-align'
 "Plug 'kien/ctrlp.vim'
 Plug 'kien/rainbow_parentheses.vim'
+"Plug 'luochen1990/rainbow'
 Plug 'majutsushi/tagbar'
 Plug 'rdnetto/YCM-Generator', { 'branch': 'stable'}
 Plug 'scrooloose/nerdcommenter'
@@ -21,6 +22,7 @@ Plug 'elzr/vim-json'
 Plug 'JamshedVesuna/vim-markdown-preview'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
+Plug 'lyuts/vim-rtags'
 
 call plug#end()
 " ------------------------------- General -------------------------------
@@ -56,6 +58,11 @@ let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/D
 let b:formatters_c = ['custom_c']
 let vim_markdown_preview_hotkey='<C-m>'
 let vim_markdown_preview_github=1
+
+" set Vim-specific sequences for RGB colors  
+set termguicolors
+let &t_8f = "\<Esc>[38;2;%lu;%lu;%lum" 
+let &t_8b = "\<Esc>[48;2;%lu;%lu;%lum"
 
 " ------------------------------- Syntastic -------------------------------
 
@@ -149,12 +156,14 @@ au VimEnter * RainbowParenthesesToggle
 au Syntax * RainbowParenthesesLoadRound
 au Syntax * RainbowParenthesesLoadSquare
 au Syntax * RainbowParenthesesLoadBraces
+ "let g:rainbow_active = 1
 
 
 " ------------------------------- fzf -------------------------------
 
 map <C-p> :Files<CR>
 let g:fzf_buffers_jump = 1
+nnoremap <silent> <Leader>ag :Ag <C-R><C-W><CR>
 
 
 
