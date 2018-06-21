@@ -13,12 +13,16 @@ alias seng533='echo 54.202.37.175 54.244.107.138'
 alias solar='cd /home/byron/go/src/github.com/Epsilon-Telemetry-Server'
 alias cc='CXX="cc_args.py g++" cmake ..'
 alias cmake3='cmake'
+alias sshreport42='ssh report42@192.168.71.26'
+alias gtree='git log --oneline --graph --decorate --all'
 #Alias ---------------------------------------------------
 
 export GOROOT=/usr/local/go
-export GOPATH=$HOME/go
+#export GOPATH=$HOME/go
+export GOPATH=/mnt/c/CVI_Workspace/Report42Workspace/report42/go 
 #export PATH=$PATH:usr/local/go/bin
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
+export PATH=$PATH:/opt/bin
 
 if [ "$TERM" == "xterm" ]; then
     # No it isn't, it's gnome-terminal
@@ -50,4 +54,18 @@ fi
 export HISTFILESIZE=
 export HISTSIZE=
 
+export CSCOPE_EDITOR=`which nvim`
+
+#fzf
 [ -f ~/.fzf.bash ] && source ~/.fzf.bash
+
+# fd - cd to selected directory
+fd() {
+    local dir
+    dir=$(find ${1:-.} -path '*/\.*' -prune \
+        -o -type d -print 2> /dev/null | fzf +m) &&
+    cd "$dir"
+}
+
+#rtags
+export PATH=$PATH:/home/bseto/Documents/rtags/build/bin 

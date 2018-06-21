@@ -23,6 +23,17 @@ Plug 'JamshedVesuna/vim-markdown-preview'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
 Plug 'lyuts/vim-rtags'
+Plug 'tpope/vim-fugitive'
+Plug 'qpkorr/vim-bufkill'
+Plug 'stanangeloff/php.vim'
+Plug 'autozimu/LanguageClient-neovim', {
+            \ 'branch': 'next',
+            \ 'do': 'bash install.sh',
+            \ }
+
+" (Optional) Multi-entry selection UI.
+Plug 'Shougo/deoplete.nvim', { 'do': ':UpdateRemotePlugins' }
+
 
 call plug#end()
 " ------------------------------- General -------------------------------
@@ -45,7 +56,8 @@ inoremap jk <esc>
 
 syntax on
 set nu
-colorscheme molokai
+"colorscheme molokai
+colorscheme Tomorrow-Night-Eighties
 
 set wildmenu
 set wildmode=longest:full,full
@@ -58,6 +70,7 @@ let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/D
 let b:formatters_c = ['custom_c']
 let vim_markdown_preview_hotkey='<C-m>'
 let vim_markdown_preview_github=1
+let g:BufKillCreateMappings = 0
 
 " set Vim-specific sequences for RGB colors  
 set termguicolors
@@ -165,6 +178,85 @@ map <C-p> :Files<CR>
 let g:fzf_buffers_jump = 1
 nnoremap <silent> <Leader>ag :Ag <C-R><C-W><CR>
 
+" ------------------------ Language Client --------------------------
+
+nnoremap <F5> :call LanguageClient_contextMenu()<CR>
 
 
 
+" ------------------------ BTags --------------------------
+
+function! s:align_lists(lists)
+    let maxes = {}
+    for list in a:lists
+        let i = 0
+        while i < len(list)
+            let maxes[i] = max([get(maxes, i, 0), len(list[i])])
+            let i += 1
+        endwhile
+    endfor
+    for list in a:lists
+        call map(list, "printf('%-'.maxes[v:key].'s', v:val)")
+    endfor
+    return a:lists
+endfunction
+
+function! s:btags_source()
+    let lines = map(split(system(printf(
+                \ 'ctags -f - --sort=no --excmd=number --language-force=%s %s',
+                \ &filetype, expand('%:S'))), "\n"), 'split(v:val, "\t")')
+    if v:shell_error
+        throw 'failed to extract tags'
+    endif
+    return map(s:align_lists(lines), 'join(v:val, "\t")')
+endfunction
+
+function! s:btags_sink(line)
+    execute split(a:line, "\t")[2]
+endfunction
+
+function! s:btags()
+    try
+        call fzf#run({
+                    \ 'source':  s:btags_source(),
+                    \ 'options': '+m -d "\t" --with-nth 1,4.. -n 1 --tiebreak=index',
+                    \ 'down':    '40%',
+                    \ 'sink':    function('s:btags_sink')})
+    catch
+        echohl WarningMsg
+        echom v:exception
+        echohl None
+    endtry
+endfunction
+
+command! BTags call s:btags()
+
+
+" ------------------------ Tags --------------------------
+
+function! s:tags_sink(line)
+    let parts = split(a:line, '\t\zs')
+    let excmd = matchstr(parts[2:], '^.*\ze;"\t')
+    execute 'silent e' parts[1][:-2]
+    let [magic, &magic] = [&magic, 0]
+    execute excmd
+    let &magic = magic
+endfunction
+
+function! s:tags()
+    if empty(tagfiles())
+        echohl WarningMsg
+        echom 'Preparing tags'
+        echohl None
+        call system('ctags -R')
+    endif
+
+    call fzf#run({
+                \ 'source':  'cat '.join(map(tagfiles(), 'fnamemodify(v:val, ":S")')).
+                \            '| grep -v -a ^!',
+                \ 'options': '+m -d "\t" --with-nth 1,4.. -n 1 --tiebreak=index',
+                \ 'down':    '40%',
+                \ 'sink':    function('s:tags_sink')})
+endfunction
+
+command! Tags call s:tags()
