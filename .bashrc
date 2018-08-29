@@ -18,8 +18,8 @@ alias gtree='git log --oneline --graph --decorate --all'
 #Alias ---------------------------------------------------
 
 export GOROOT=/usr/local/go
-#export GOPATH=$HOME/go
-export GOPATH=/mnt/c/CVI_Workspace/Report42Workspace/report42/go 
+export GOPATH=$HOME/go
+#export GOPATH=/mnt/c/CVI_Workspace/Report42Workspace/report42/go 
 #export PATH=$PATH:usr/local/go/bin
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 export PATH=$PATH:/opt/bin
@@ -30,6 +30,7 @@ if [ "$TERM" == "xterm" ]; then
 fi
 
 export TERMCAP=$(echo $TERMCAP | sed -e 's/Co#8/Co#256/g')
+export LS_COLORS="ow=01;36;40"
 
 #PS1="\e[1;32m[\u@\h\e[m \e[1;34m\W]\$ \e[m"
 PS1="\[\033[01;32m\]\u@\h\[\033[01;34m\] \W \$\[\033[00m\]"
