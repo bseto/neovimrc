@@ -2,6 +2,7 @@
 call plug#begin('~/.local.share/nvim/plugged')
 Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
 Plug 'bling/vim-airline'
+Plug 'vim-airline/vim-airline-themes'
 Plug 'dagwieers/asciidoc-vim'
 Plug 'easymotion/vim-easymotion'
 Plug 'flazz/vim-colorschemes'
@@ -15,6 +16,7 @@ Plug 'scrooloose/nerdcommenter'
 Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
 Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
+Plug 'mdempsky/gocode', { 'rtp': 'nvim', 'do': '~/.config/nvim/plugged/gocode/nvim/symlink.sh' }
 Plug 'chiel92/vim-autoformat'
 Plug 'jceb/vim-orgmode'
 Plug 'tpope/vim-speeddating'
@@ -26,14 +28,17 @@ Plug 'lyuts/vim-rtags'
 Plug 'tpope/vim-fugitive'
 Plug 'qpkorr/vim-bufkill'
 Plug 'stanangeloff/php.vim'
-Plug 'autozimu/LanguageClient-neovim', {
-            \ 'branch': 'next',
-            \ 'do': 'bash install.sh',
-            \ }
+Plug 'zxqfl/tabnine-vim'
+Plug 'kshenoy/vim-signature'
+Plug 'Avi-D-coder/fzf-wordnet.vim'
 
 " (Optional) Multi-entry selection UI.
 Plug 'Shougo/deoplete.nvim', { 'do': ':UpdateRemotePlugins' }
-
+Plug 'tpope/vim-surround'
+Plug 'ternjs/tern_for_vim'
+"Javascript
+Plug 'mxw/vim-jsx'
+Plug 'pangloss/vim-javascript'
 
 call plug#end()
 " ------------------------------- General -------------------------------
@@ -91,6 +96,10 @@ let g:syntastic_warning_symbol = "⚠"
 
 let g:syntastic_asciidoc_asciidoc_exec = 'asciidoctor'
 let g:airline#extensions#tabline#enabled = 1
+let g:airline#extensions#tagbar#flags = 'f'  " show full tag hierarchy
+let g:airline_theme='base16_google'
+
+let g:javascript_plugin_jsdoc = 1
 " ------------------------------- Ctags -------------------------------
 
 "build tags of your own project with CTRL+F12
@@ -178,11 +187,11 @@ map <C-p> :Files<CR>
 let g:fzf_buffers_jump = 1
 nnoremap <silent> <Leader>ag :Ag <C-R><C-W><CR>
 
+imap <C-S> <Plug>(fzf-complete-wordnet)
+
 " ------------------------ Language Client --------------------------
 
 nnoremap <F5> :call LanguageClient_contextMenu()<CR>
-
-
 
 " ------------------------ BTags --------------------------
 
