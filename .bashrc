@@ -19,8 +19,8 @@ alias jtags="ctags -R . && sed -i '' -E '/^(if|switch|function|module\.exports|i
 #Alias ---------------------------------------------------
 
 export GOROOT=/usr/local/go
-#export GOPATH=$HOME/go
-export GOPATH=/mnt/c/CVI_Workspace/Report42Workspace/report42/go 
+export GOPATH=$HOME/go
+#export GOPATH=/mnt/c/CVI_Workspace/Report42Workspace/report42/go 
 #export PATH=$PATH:usr/local/go/bin
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 export PATH=$PATH:/opt/bin
@@ -32,6 +32,7 @@ if [ "$TERM" == "xterm" ]; then
 fi
 
 export TERMCAP=$(echo $TERMCAP | sed -e 's/Co#8/Co#256/g')
+export LS_COLORS="ow=01;36;40"
 
 #PS1="\[\033[01;32m\]\u@\h\[\033[01;34m\] \W \$\[\033[00m\] (\$(git branch 2>/dev/null | grep '^*' | colrm 1 2)) \$"
 PS1='\[\033[01;32m\]\u@\h\[\033[01;34m\] \W\[\033m\] - [$(git branch 2>/dev/null | grep "^*" | colrm 1 2)\[\033[0;32m\]]\[\033[0m\033[0;32m\] \$\[\033[0m\033[0;32m\]\[\033[0m\] '
