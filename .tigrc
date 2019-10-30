@@ -1,0 +1,9 @@
+bind main   P !git cherry-pick %(commit)
+bind main   w !git push origin %(branch)
+bind main   N !?git checkout -b %(prompt)
+bind main   C !git checkout %(branch)
+bind main   F !git fetch origin
+bind main   R !git reset --hard %(branch)
+
+bind status A !git commit --amend
+bind status w !git push origin %(branch)
