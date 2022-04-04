@@ -1,5 +1,5 @@
 " ------------------------------- Vim-Plug -------------------------------
-call plug#begin('~/.local.share/nvim/plugged')
+call plug#begin('~/.local/share/nvim/plugged')
 Plug 'Valloric/YouCompleteMe', { 'do': './install.sh' }
 Plug 'bling/vim-airline'
 Plug 'vim-airline/vim-airline-themes'
@@ -71,8 +71,6 @@ set statusline+=%#warningmsg#
 set statusline+=%{SyntasticStatuslineFlag()}
 set statusline+=%*
 
-let b:formatdef_custom_c='"astyle --mode=c --suffix=none --options=/home/byron/Documents/Recruit-Resources/Development-Guide/Style-Guide/astylerc"'
-let b:formatters_c = ['custom_c']
 let vim_markdown_preview_hotkey='<C-m>'
 let vim_markdown_preview_github=1
 let g:BufKillCreateMappings = 0
@@ -118,12 +116,6 @@ let g:ycm_extra_conf_globlist = ['.*']
 nnoremap / /\c
 vnoremap / /\c
 
-
-" ------------------------------- aStyle -------------------------------
-"augroup autocom
-"autocmd!
-":au BufWrite * :Autoformat
-"augroup END
 " ------------------------------- Navigation -------------------------------
 
 let g:ctrlp_cache_dir = $HOME . '/.cache/ctrlp'
@@ -269,3 +261,20 @@ function! s:tags()
 endfunction
 
 command! Tags call s:tags()
+
+" ----------------- Go Debug ---------------------------
+let g:go_debug_windows = {
+      \ 'vars':       'rightbelow 50vnew',
+      \ 'stack':      'rightbelow 10new',
+      \ }
+
+let g:go_debug_mappings = {
+      \ '(go-debug-continue)': {'key': 'c', 'arguments': '<nowait>'},
+      \ '(go-debug-next)': {'key': 'n', 'arguments': '<nowait>'},
+      \ '(go-debug-step)': {'key': 's'},
+      \ '(go-debug-print)': {'key': 'p'},
+  \}   
+
+map <leader>ds :GoDebugStart<cr>
+map <leader>dt :GoDebugStop<cr>
+map <leader>db :GoDebugBreakpoint<cr>
