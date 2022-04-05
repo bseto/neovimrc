@@ -31,6 +31,7 @@ Plug 'stanangeloff/php.vim'
 Plug 'zxqfl/tabnine-vim'
 Plug 'kshenoy/vim-signature'
 Plug 'Avi-D-coder/fzf-wordnet.vim'
+Plug 'romainl/vim-qf'
 
 " (Optional) Multi-entry selection UI.
 Plug 'Shougo/deoplete.nvim', { 'do': ':UpdateRemotePlugins' }
@@ -80,6 +81,8 @@ set termguicolors
 let &t_8f = "\<Esc>[38;2;%lu;%lu;%lum" 
 let &t_8b = "\<Esc>[48;2;%lu;%lu;%lum"
 
+nnoremap <Leader>sv :source $MYVIMRC<CR>
+
 " ------------------------------- Syntastic -------------------------------
 
 let g:syntastic_go_checkers = ['golint', 'govet', 'errcheck']
@@ -124,14 +127,16 @@ if executable('ag')
   let g:ctrlp_user_command = 'ag %s -l --nocolor -g ""'
 endif
 
-nnoremap <C-n> :NERDTreeToggle<CR>
-nmap <C-m> :TagbarToggle<CR>
+nnoremap <C-n> :NERDTreeToggle %<CR>
+nnoremap <C-t> :TagbarToggle<CR>
 
 nnoremap <Leader>d :bp<CR>
 nnoremap <Leader>f :bn<CR>
 nnoremap <leader>gd :YcmCompleter GoTo<CR>
 nnoremap <leader>gi :YcmCompleter GoToInclude<CR>
 nnoremap <leader>gt :YcmCompleter GetType<CR>
+nnoremap <leader>gh :YcmCompleter GetDoc<CR>
+nnoremap <leader>gr :YcmCompleter GoToReferences<CR>
 
 nnoremap tl :tabnext<CR>
 nnoremap th :tabprev<CR>
@@ -261,6 +266,35 @@ function! s:tags()
 endfunction
 
 command! Tags call s:tags()
+
+" some guy online said I need this https://www.reddit.com/r/vimporn/comments/89d9d3/comment/dws571b/?utm_source=share&utm_medium=web2x&context=3
+let g:tagbar_type_go = {
+        \ 'ctagstype' : 'go',
+        \ 'kinds'     : [
+            \ 'p:package',
+            \ 'i:imports:1',
+            \ 'c:constants',
+            \ 'v:variables',
+            \ 't:types',
+            \ 'n:interfaces',
+            \ 'w:fields',
+            \ 'e:embedded',
+            \ 'm:methods',
+            \ 'r:constructor',
+            \ 'f:functions'
+    \ ],
+    \ 'sro' : '.',
+    \ 'kind2scope' : {
+        \ 't' : 'ctype',
+        \ 'n' : 'ntype'
+    \ },
+    \ 'scope2kind' : {
+        \ 'ctype' : 't',
+        \ 'ntype' : 'n'
+    \ },
+    \ 'ctagsbin'  : 'gotags',
+    \ 'ctagsargs' : '-sort -silent'
+\ }
 
 " ----------------- Go Debug ---------------------------
 let g:go_debug_windows = {
