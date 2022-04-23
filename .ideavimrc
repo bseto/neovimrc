@@ -1,0 +1,50 @@
+Plug 'easymotion/vim-easymotion'
+
+set easymotion
+set ideajoin
+set NERDTree
+
+let mapleader=","
+set colorcolumn=80,100
+
+inoremap jk <esc>
+
+syntax on
+set nu
+
+" ------------------------------- Editor Commands -------------------------------
+
+nmap gI :action GotoImplementation<CR>
+nmap gh <action>(ShowErrorDescription)
+nmap gn <action>(StepOver)
+nmap go <action>(StepOut)
+nmap gi <action>(StepInto)
+nmap gf <action>(FindInPath)
+nmap gc <action>(Resume)
+nmap gq <action>(Stop)
+nmap gtd <action>(DebugClass)
+nmap gtr <action>(RunClass)
+nmap <C-p> <action>(GotoFile)
+
+nmap <Leader>f <action>(NextTab)
+nmap <Leader>d <action>(PreviousTab)
+nmap <Leader>g <action>(GotoNextError)
+
+nmap <Leader>cc <action>(CommentByLineComment)
+vmap <Leader>cc <action>(CommentByLineComment)
+
+" ------------------------------- EasyMotion -------------------------------
+
+map <Leader> <Plug>(easymotion-prefix)
+nmap <Leader>w <Plug>(easymotion-w)
+nmap <Leader>e <Plug>(easymotion-e)
+nmap <Leader>b <Plug>(easymotion-b)
+
+" ------------------------------- Regex -------------------------------
+nnoremap / /\c
+vnoremap / /\c
+
+map <C-h> <C-W><
+map <C-l> <C-W>>
+map <C-j> <C-W>-
+map <C-k> <C-W>+

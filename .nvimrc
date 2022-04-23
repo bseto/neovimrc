@@ -17,14 +17,14 @@ Plug 'scrooloose/nerdtree', { 'on': 'NERDTreeToggle' }
 Plug 'scrooloose/syntastic'
 Plug 'fatih/vim-go'
 Plug 'mdempsky/gocode', { 'rtp': 'nvim', 'do': '~/.config/nvim/plugged/gocode/nvim/symlink.sh' }
-Plug 'chiel92/vim-autoformat'
+"Plug 'chiel92/vim-autoformat'
 Plug 'jceb/vim-orgmode'
 Plug 'tpope/vim-speeddating'
 Plug 'elzr/vim-json'
 Plug 'JamshedVesuna/vim-markdown-preview'
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 Plug 'junegunn/fzf.vim'
-Plug 'lyuts/vim-rtags'
+"Plug 'lyuts/vim-rtags'
 Plug 'tpope/vim-fugitive'
 Plug 'qpkorr/vim-bufkill'
 Plug 'stanangeloff/php.vim'
@@ -32,6 +32,7 @@ Plug 'zxqfl/tabnine-vim'
 Plug 'kshenoy/vim-signature'
 Plug 'Avi-D-coder/fzf-wordnet.vim'
 Plug 'romainl/vim-qf'
+Plug 'mhinz/vim-startify'
 
 " (Optional) Multi-entry selection UI.
 Plug 'Shougo/deoplete.nvim', { 'do': ':UpdateRemotePlugins' }
@@ -81,7 +82,14 @@ set termguicolors
 let &t_8f = "\<Esc>[38;2;%lu;%lu;%lum" 
 let &t_8b = "\<Esc>[48;2;%lu;%lu;%lum"
 
-nnoremap <Leader>sv :source $MYVIMRC<CR>
+nmap <leader>q :bd<CR>
+nmap <leader>Q :BD<CR>
+
+set nowrap
+let g:go_fmt_autosave = 0
+set listchars=eol:\ ,tab:→\ ,extends:>,precedes:<,space:·
+"set listchars=eol:$,tab:> ,trail:~,extends:>,precedes:<,space:·
+set list
 
 " ------------------------------- Syntastic -------------------------------
 
@@ -127,8 +135,9 @@ if executable('ag')
   let g:ctrlp_user_command = 'ag %s -l --nocolor -g ""'
 endif
 
-nnoremap <C-n> :NERDTreeToggle %<CR>
-nnoremap <C-t> :TagbarToggle<CR>
+nmap <leader>r :NERDTreeFind<CR>
+nnoremap <C-n> :NERDTreeToggle<CR>
+nnoremap <leader>t :TagbarToggle<CR>
 
 nnoremap <Leader>d :bp<CR>
 nnoremap <Leader>f :bn<CR>
@@ -144,13 +153,11 @@ nnoremap tn :tabnew<CR>
 
 let g:EasyMotion_smartcase = 1
 
-map <Leader>s <Plug>(easymotion-s)
 map <Leader>j <Plug>(easymotion-j)
 map <Leader>k <Plug>(easymotion-k)
 map <Leader>w <Plug>(easymotion-w)
 map <Leader>b <Plug>(easymotion-b)
 map <Leader>e <Plug>(easymotion-e)
-map <Leader>/ <Plug>(easymotion-jumptoanywhere)
 
 " ------------------------------- Buffer Resize -------------------------------
 map <C-h> <C-W><
@@ -298,9 +305,10 @@ let g:tagbar_type_go = {
 
 " ----------------- Go Debug ---------------------------
 let g:go_debug_windows = {
-      \ 'vars':       'rightbelow 50vnew',
-      \ 'stack':      'rightbelow 10new',
-      \ }
+      \ 'vars':         'rightbelow 30vnew',
+      \ 'stack':        'rightbelow 20new',
+      \ 'out':          'botright 5new',
+\ }
 
 let g:go_debug_mappings = {
       \ '(go-debug-continue)': {'key': 'c', 'arguments': '<nowait>'},
@@ -309,6 +317,29 @@ let g:go_debug_mappings = {
       \ '(go-debug-print)': {'key': 'p'},
   \}   
 
-map <leader>ds :GoDebugStart<cr>
-map <leader>dt :GoDebugStop<cr>
-map <leader>db :GoDebugBreakpoint<cr>
+map <leader>gs :GoDebugStart<cr>
+map <leader>gt :GoDebugTestFunc<cr>
+map <leader>gc :GoDebugContinue<cr>
+map <leader>gb :GoDebugBreakpoint<cr>
+map <leader>go :GoDebugStepOut<cr>
+map <leader>gq :GoDebugStop<cr>
+
+
+" ----------------- Startify ---------------------------
+let g:startify_bookmarks = [
+            \ { 'z': '~/.zshrc' },
+            \ { 'v': '~/neovimrc/.nvimrc' },
+            \ ]
+
+"let g:startify_lists = [
+            "\ { 'header': ['    Bookmarks'],        'type': 'bookmarks' },
+            "\ { 'header': ['    MRU'],              'type': 'files' },
+            "\ { 'header': ['    MRU '. getcwd()],   'type': 'dir' },
+            "\ ]
+
+let g:startify_fortune_use_unicode = 1
+nmap <Leader>s :Startify<CR>
+autocmd User Startified set buftype=
+
+" ----------------- Marks ---------------------------
+nnoremap m/ :Marks<CR>
