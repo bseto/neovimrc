@@ -10,6 +10,7 @@ export ZSH="$HOME/.oh-my-zsh"
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 ZSH_THEME="agnoster"
 
+alias gtree='git log --oneline --graph --decorate --all'
 alias vim='nvim'
 alias rename_video_to_gif='function rename_video_to_gif(){ ffmpeg -i $1 $2.gif && gifsicle -O3 $2.gif -o $2.gif && osascript -e "display notification \"$2.gif successfully converted and saved\" with title \"MOV2GIF SUCCESS!\""};rename_video_to_gif'
 export GOPATH="/Users/bseto/go"
@@ -110,3 +111,9 @@ source $ZSH/oh-my-zsh.sh
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+# Created by `pipx` on 2022-05-09 16:02:36
+export PATH="$PATH:/Users/bseto/Library/Python/3.9/bin"
+
+# Created by `pipx` on 2022-05-09 16:02:40
+export PATH="$PATH:/Users/bseto/.local/bin"
