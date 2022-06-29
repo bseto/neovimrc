@@ -2,11 +2,9 @@
 
 WORK_DIR=`pwd`
 
-#apt-get install curl
-
-#bashrc
-#mv ~/.bashrc ~/.bashrc.bak
-#ln -s ${WORK_DIR}/.bashrc ~/.bashrc
+# install homebrew
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+git clone --depth=1 https://github.com/romkatv/powerlevel10k.git $ZSH/custom/themes/powerlevel10k
 
 #pluginstall
 mkdir -p ~/.local/share/nvim/site/autoload
@@ -17,7 +15,6 @@ mkdir -p ~/.config/nvim
 #rm ~/.config/nvim/init.vim
 ln -s ${WORK_DIR}/.nvimrc ~/.config/nvim/init.vim
 
-git clone --depth=1 https://github.com/romkatv/powerlevel10k.git $ZSH/custom/themes/powerlevel10k
 
 
 
