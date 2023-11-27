@@ -50,6 +50,8 @@ set clipboard+=unnamedplus
 set nocompatible
 filetype off
 
+let g:python3_host_prog = '/usr/bin/python3'
+
 set tabstop=4
 set shiftwidth=4
 set expandtab

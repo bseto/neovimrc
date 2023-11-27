@@ -1,1 +1,0 @@
-/Users/bseto/.config/tmux
