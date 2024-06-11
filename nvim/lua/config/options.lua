@@ -3,3 +3,4 @@
 -- Add any additional options here
 
 vim.g.mapleader = ","
+vim.opt.colorcolumn = "80,100"
