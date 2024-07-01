@@ -27,6 +27,7 @@ require("lazy").setup({
     { import = "lazyvim.plugins.extras.lang.tailwind" },
     { import = "lazyvim.plugins.extras.lang.sql" },
     { import = "lazyvim.plugins.extras.lang.git" },
+    { import = "lazyvim.plugins.extras.editor.illuminate" },
 
     -- import/override with your plugins
     { import = "plugins" },
