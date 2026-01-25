@@ -4,3 +4,6 @@
 
 vim.g.mapleader = ","
 vim.opt.colorcolumn = "80,100"
+vim.g.snacks_animate = false
+vim.keymap.set("n", "<C-w>.", "<C-w><", { noremap = true, silent = true })
+vim.keymap.set("n", "<C-w>,", "<C-w>>", { noremap = true, silent = true })
