@@ -1,33 +1,12 @@
 return {
   "greggh/claude-code.nvim",
   dependencies = {
-    "nvim-lua/plenary.nvim", -- Required for git operations
+    "nvim-lua/plenary.nvim",
   },
   keys = {
     {
       "<leader>co",
       function()
-        -- Find claude window
-        for _, win in ipairs(vim.api.nvim_list_wins()) do
-          local buf = vim.api.nvim_win_get_buf(win)
-          local bufname = vim.api.nvim_buf_get_name(buf)
-          if bufname:match("claude") then
-            local is_float = vim.api.nvim_win_get_config(win).relative ~= ""
-            if is_float then
-              -- It's floating, close and reopen at bottom
-              vim.api.nvim_win_close(win, true)
-              require("claude-code").setup({
-                window = { split_ratio = 0.3, position = "botright", enter_insert = true },
-              })
-              require("claude-code").toggle()
-            else
-              -- Already at bottom, just close (toggle off)
-              vim.api.nvim_win_close(win, true)
-            end
-            return
-          end
-        end
-        -- No window found, open at bottom
         require("claude-code").setup({
           window = { split_ratio = 0.3, position = "botright", enter_insert = true },
         })
@@ -39,38 +18,6 @@ return {
     {
       "<leader>cp",
       function()
-        -- Find claude window
-        for _, win in ipairs(vim.api.nvim_list_wins()) do
-          local buf = vim.api.nvim_win_get_buf(win)
-          local bufname = vim.api.nvim_buf_get_name(buf)
-          if bufname:match("claude") then
-            local is_float = vim.api.nvim_win_get_config(win).relative ~= ""
-            if is_float then
-              -- Already floating, just close (toggle off)
-              vim.api.nvim_win_close(win, true)
-            else
-              -- It's at bottom, close and reopen as float
-              vim.api.nvim_win_close(win, true)
-              require("claude-code").setup({
-                window = {
-                  position = "float",
-                  enter_insert = true,
-                  float = {
-                    width = "90%",
-                    height = "90%",
-                    row = "center",
-                    col = "center",
-                    relative = "editor",
-                    border = "double",
-                  },
-                },
-              })
-              require("claude-code").toggle()
-            end
-            return
-          end
-        end
-        -- No window found, open as float
         require("claude-code").setup({
           window = {
             position = "float",
