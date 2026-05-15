@@ -22,6 +22,8 @@ map("n", "<C-w><C-k>", "<cmd>resize +4<cr>", { desc = "Increase Window Height" }
 -- Database UI toggle
 map("n", "<leader>D", "<cmd>DBUI<cr>", { desc = "Open Database UI" })
 
+-- Find Files (cwd) overrides live in lua/plugins/snacks.lua so they win over LazyVim's lazy keys.
+
 -- local hop = require("hop")
 -- local directions = require("hop.hint").HintDirection
 -- vim.keymap.set("", "s", function()
