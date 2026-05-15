@@ -4,7 +4,7 @@ return {
   version = false,
   build = "make",
   opts = {
-    provider = "claude",
+    provider = "lmstudio",
     providers = {
       claude = {
         auth_type = "api",
@@ -14,6 +14,17 @@ return {
         extra_request_body = {
           temperature = 0.75,
           max_tokens = 20480,
+        },
+      },
+      lmstudio = {
+        __inherited_from = "openai",
+        endpoint = "http://127.0.0.1:1234/v1",
+        api_key = "lm-studio",
+        model = "local-model", -- replace with the model name shown in LM Studio
+        timeout = 60000,
+        extra_request_body = {
+          temperature = 0.75,
+          max_tokens = 262144,
         },
       },
     },
