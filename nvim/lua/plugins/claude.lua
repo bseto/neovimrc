@@ -1,104 +1,56 @@
+-- Claude Code, run as snacks.nvim floating terminals with support for
+-- multiple independent chats. Logic lives in lua/util/claude.lua.
+--
+-- Keymaps (chosen to preserve muscle memory from the old greggh setup):
+--   <leader>cp   pick/open a chat (lists open chats by name + "New chat")
+--   <leader>cn   open a new chat immediately
+--   <leader>cR   rename the current (or last-used) chat
+--   <leader>c1-9 jump straight to chat 1..9 (the number shown in the footer)
+--   <C-,>        toggle the last-used chat (creates Chat 1 if none exist)
+local keys = {
+  {
+    "<leader>cp",
+    function()
+      require("util.claude").pick()
+    end,
+    desc = "Claude: pick/open chat",
+  },
+  {
+    "<leader>cn",
+    function()
+      require("util.claude").new()
+    end,
+    desc = "Claude: new chat",
+  },
+  {
+    "<leader>cR",
+    function()
+      require("util.claude").rename()
+    end,
+    desc = "Claude: rename chat",
+  },
+  {
+    "<C-,>",
+    function()
+      require("util.claude").toggle_last()
+    end,
+    desc = "Claude: toggle last chat",
+    mode = { "n", "t" },
+  },
+}
+
+-- <leader>c1 .. <leader>c9 jump to the chat with that number.
+for i = 1, 9 do
+  keys[#keys + 1] = {
+    "<leader>c" .. i,
+    function()
+      require("util.claude").select(i)
+    end,
+    desc = "Claude: go to chat " .. i,
+  }
+end
+
 return {
-  "greggh/claude-code.nvim",
-  dependencies = {
-    "nvim-lua/plenary.nvim",
-  },
-  keys = {
-    {
-      "<leader>co",
-      function()
-        require("claude-code").setup({
-          window = { split_ratio = 0.3, position = "botright", enter_insert = true },
-        })
-        require("claude-code").toggle()
-      end,
-      desc = "Claude Code (bottom)",
-      mode = { "n", "t" },
-    },
-    {
-      "<leader>cp",
-      function()
-        require("claude-code").setup({
-          window = {
-            position = "float",
-            enter_insert = true,
-            float = {
-              width = "90%",
-              height = "90%",
-              row = "center",
-              col = "center",
-              relative = "editor",
-              border = "double",
-            },
-          },
-        })
-        require("claude-code").toggle()
-      end,
-      desc = "Claude Code (popup)",
-      mode = { "n", "t" },
-    },
-  },
-  config = function()
-    require("claude-code").setup({
-      -- Terminal window settings
-      window = {
-        split_ratio = 0.3, -- Percentage of screen for the terminal window (height for horizontal, width for vertical splits)
-        position = "botright", -- Position of the window: "botright", "topleft", "vertical", "float", etc.
-        enter_insert = true, -- Whether to enter insert mode when opening Claude Code
-        hide_numbers = true, -- Hide line numbers in the terminal window
-        hide_signcolumn = true, -- Hide the sign column in the terminal window
-
-        -- Floating window configuration (only applies when position = "float")
-        float = {
-          width = "80%", -- Width: number of columns or percentage string
-          height = "80%", -- Height: number of rows or percentage string
-          row = "center", -- Row position: number, "center", or percentage string
-          col = "center", -- Column position: number, "center", or percentage string
-          relative = "editor", -- Relative to: "editor" or "cursor"
-          border = "rounded", -- Border style: "none", "single", "double", "rounded", "solid", "shadow"
-        },
-      },
-      -- File refresh settings
-      refresh = {
-        enable = true, -- Enable file change detection
-        updatetime = 100, -- updatetime when Claude Code is active (milliseconds)
-        timer_interval = 1000, -- How often to check for file changes (milliseconds)
-        show_notifications = true, -- Show notification when files are reloaded
-      },
-      -- Git project settings
-      git = {
-        use_git_root = true, -- Set CWD to git root when opening Claude Code (if in git project)
-      },
-      -- Shell-specific settings
-      shell = {
-        separator = "&&", -- Command separator used in shell commands
-        pushd_cmd = "pushd", -- Command to push directory onto stack (e.g., 'pushd' for bash/zsh, 'enter' for nushell)
-        popd_cmd = "popd", -- Command to pop directory from stack (e.g., 'popd' for bash/zsh, 'exit' for nushell)
-      },
-      -- Command settings
-      command = "claude --enable-auto-mode", -- Command used to launch Claude Code
-      -- Command variants
-      command_variants = {
-        -- Conversation management
-        continue = "--continue", -- Resume the most recent conversation
-        resume = "--resume", -- Display an interactive conversation picker
-
-        -- Output options
-        verbose = "--verbose", -- Enable verbose logging with full turn-by-turn output
-      },
-      -- Keymaps
-      keymaps = {
-        toggle = {
-          normal = "<C-,>", -- Normal mode keymap for toggling Claude Code, false to disable
-          terminal = "<C-,>", -- Terminal mode keymap for toggling Claude Code, false to disable
-          variants = {
-            continue = "<leader>cC", -- Normal mode keymap for Claude Code with continue flag
-            verbose = "<leader>cV", -- Normal mode keymap for Claude Code with verbose flag
-          },
-        },
-        window_navigation = true, -- Enable window navigation keymaps (<C-h/j/k/l>)
-        scrolling = true, -- Enable scrolling keymaps (<C-f/b>) for page up/down
-      },
-    })
-  end,
+  "folke/snacks.nvim",
+  keys = keys,
 }
