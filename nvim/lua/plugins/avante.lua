@@ -26,8 +26,6 @@ return {
         extra_request_body = {
           -- No temperature: Opus 4.8 uses adaptive thinking, which rejects sampling params.
           max_tokens = 32768,
-          thinking = { type = "adaptive", display = "summarized" },
-          output_config = { effort = "high" },
         },
       },
       lmstudio = {
