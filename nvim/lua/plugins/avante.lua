@@ -4,16 +4,30 @@ return {
   version = false,
   build = "make",
   opts = {
-    provider = "lmstudio",
+    provider = "bifrost",
     providers = {
-      claude = {
+      bifrost = {
+        -- Claude/bedrock models MUST go through Bifrost's Anthropic-native route
+        -- (/anthropic), not the OpenAI-compat route (/openai). The OpenAI wire
+        -- format has nowhere to carry Anthropic's thinking-block `signature`, so
+        -- multi-turn replays drop it and the API 400s with
+        -- "messages.N.content.0.thinking.signature: Field required".
+        -- Inheriting from "claude" makes Avante speak native Anthropic, which
+        -- captures and round-trips the signature correctly.
+        __inherited_from = "claude",
         auth_type = "api",
-        endpoint = "https://api.anthropic.com",
-        model = "claude-sonnet-4-6",
-        timeout = 30000,
+        endpoint = "https://bifrost.stackadapt.dev/anthropic",
+        -- Key lives in the macOS Keychain, never in this repo.
+        -- Set it once: security add-generic-password -U -a "$USER" -s bifrost_api_key -w
+        api_key_name = "cmd:security find-generic-password -s bifrost_api_key -w",
+        -- Bifrost exposes Anthropic models with a bedrock/ prefix (see opencode/zed configs).
+        model = "bedrock/claude-opus-4-8",
+        timeout = 60000,
         extra_request_body = {
-          temperature = 0.75,
-          max_tokens = 20480,
+          -- No temperature: Opus 4.8 uses adaptive thinking, which rejects sampling params.
+          max_tokens = 32768,
+          thinking = { type = "adaptive", display = "summarized" },
+          output_config = { effort = "high" },
         },
       },
       lmstudio = {
