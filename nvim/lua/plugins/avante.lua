@@ -23,6 +23,7 @@ return {
         -- Bifrost exposes Anthropic models with a bedrock/ prefix (see opencode/zed configs).
         model = "bedrock/claude-opus-4-8",
         timeout = 60000,
+        disable_tools = true,
         extra_request_body = {
           -- No temperature: Opus 4.8 uses adaptive thinking, which rejects sampling params.
           max_tokens = 32768,
