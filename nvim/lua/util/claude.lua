@@ -1,6 +1,7 @@
--- Multiple Claude Code chats via snacks.nvim floating terminals.
+-- Multiple AI-agent chats (Claude Code, Codex CLI) via snacks.nvim floating
+-- terminals.
 --
--- Each chat is a `claude` terminal distinguished by snacks' `count` field
+-- Each chat is an agent CLI terminal distinguished by snacks' `count` field
 -- (1, 2, 3...). snacks tracks terminals by {cmd, cwd, count}, so reusing the
 -- same cmd + cwd and only varying `count` gives us stable, addressable chats.
 -- Open chats are discovered by scanning buffers for the `b:snacks_terminal`
@@ -13,8 +14,41 @@
 
 local M = {}
 
--- Launch command. Mirrors the flags the old greggh/claude-code.nvim setup used.
-local CMD = "claude --enable-auto-mode"
+-- Launch command variants. `claude`, `claude-bf` and `codex-bf` are zsh
+-- functions in ~/.zshenv (the `-bf` ones route through StackAdapt's Bifrost
+-- gateway using the keychain virtual key), and snacks runs the command through
+-- a non-interactive zsh which sources ~/.zshenv, so all of them resolve fine.
+-- The claude flags mirror the old greggh/claude-code.nvim setup; codex needs no
+-- flags because its Bifrost provider and model live in ~/.codex/config.toml.
+--
+-- A chat's identity in snacks is {cmd, cwd, count}, so the exact cmd string is
+-- what distinguishes one variant from another. We record it per chat (via
+-- b:snacks_terminal.cmd) and look it up when reopening. `tag` is the short
+-- name shown in footers and the picker for chats without a custom name, so a
+-- glance tells codex chats apart from claude ones.
+local VARIANTS = {
+  { label = "claude", tag = "claude", cmd = "claude --enable-auto-mode" },
+  { label = "claude-bf (Bifrost)", tag = "claude-bf", cmd = "claude-bf --enable-auto-mode" },
+  { label = "codex-bf (Bifrost)", tag = "codex", cmd = "codex-bf" },
+}
+
+--- The variant whose launch command is `cmd`, or nil if it isn't one of ours.
+--- @param cmd any
+--- @return { label: string, tag: string, cmd: string }?
+local function variant_for(cmd)
+  for _, v in ipairs(VARIANTS) do
+    if cmd == v.cmd then
+      return v
+    end
+  end
+end
+
+--- True if `cmd` is one of our chat launch commands (any variant).
+--- @param cmd any
+--- @return boolean
+local function is_chat_cmd(cmd)
+  return variant_for(cmd) ~= nil
+end
 
 -- Number of the chat most recently opened/focused, used by toggle_last().
 M.last = nil
@@ -26,7 +60,8 @@ local function root()
   return vim.fs.root(0, ".git") or vim.uv.cwd()
 end
 
---- Human-facing name for a chat buffer: the custom name if set, else "Chat N".
+--- Human-facing name for a chat buffer: the custom name if set, else the
+--- variant's tag ("claude", "codex", ...), else "Chat N".
 --- @param buf integer
 --- @param count integer?
 --- @return string
@@ -36,13 +71,17 @@ local function display(buf, count)
     return name
   end
   local meta = vim.b[buf] and vim.b[buf].snacks_terminal
+  local v = type(meta) == "table" and variant_for(meta.cmd) or nil
+  if v then
+    return v.tag
+  end
   return "Chat " .. tostring(count or (meta and meta.id) or "?")
 end
 
---- List currently-open Claude chats, sorted by chat number.
+--- List currently-open chats, sorted by chat number.
 --- Scans every buffer for the `b:snacks_terminal` marker snacks sets on
---- terminal buffers, then keeps the ones running our `claude` command.
---- @return { count: integer, buf: integer }[]
+--- terminal buffers, then keeps the ones running any of our launch commands.
+--- @return { count: integer, buf: integer, cmd: string }[]
 local function chats()
   local out = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
@@ -50,8 +89,8 @@ local function chats()
       local ok, meta = pcall(function()
         return vim.b[buf].snacks_terminal
       end)
-      if ok and type(meta) == "table" and meta.cmd == CMD then
-        out[#out + 1] = { count = meta.id, buf = buf }
+      if ok and type(meta) == "table" and is_chat_cmd(meta.cmd) then
+        out[#out + 1] = { count = meta.id, buf = buf, cmd = meta.cmd }
       end
     end
   end
@@ -96,7 +135,7 @@ end
 function M.refresh_all()
   for _, t in ipairs(Snacks.terminal.list()) do
     local meta = vim.b[t.buf] and vim.b[t.buf].snacks_terminal
-    if type(meta) == "table" and meta.cmd == CMD then
+    if type(meta) == "table" and is_chat_cmd(meta.cmd) then
       refresh(t)
     end
   end
@@ -140,11 +179,13 @@ local function next_count(list)
   return n
 end
 
---- Open a brand-new (unnamed) chat in the next free slot.
-function M.new()
+--- Spawn a new chat in the next free slot running `cmd`. Internal; callers go
+--- through M.new() (which picks the variant first).
+--- @param cmd string
+local function spawn(cmd)
   local n = next_count(chats())
   M.last = n
-  local term = Snacks.terminal.toggle(CMD, term_opts(n))
+  local term = Snacks.terminal.toggle(cmd, term_opts(n))
   -- Keep other chats' footers in sync when this one opens or later closes.
   if term then
     term:on("TermClose", function()
@@ -154,15 +195,47 @@ function M.new()
   vim.schedule(M.refresh_all)
 end
 
+--- Open a brand-new chat, prompting for the launch variant (claude,
+--- claude-bf, codex-bf) first.
+function M.new()
+  -- Single variant collapses to no prompt; otherwise ask which to launch.
+  if #VARIANTS == 1 then
+    return spawn(VARIANTS[1].cmd)
+  end
+  vim.ui.select(VARIANTS, {
+    prompt = "New chat",
+    format_item = function(v)
+      return v.label
+    end,
+  }, function(choice)
+    if choice then
+      spawn(choice.cmd)
+    end
+  end)
+end
+
+--- The launch command for the open chat numbered `count`, or nil if no such
+--- chat is open. Used to reattach to the right variant instead of guessing.
+--- @param count integer
+--- @return string?
+local function cmd_for(count)
+  for _, c in ipairs(chats()) do
+    if c.count == count then
+      return c.cmd
+    end
+  end
+end
+
 --- Show and focus an existing chat by number.
 --- @param count integer
 function M.open(count)
   M.last = count
+  local cmd = cmd_for(count) or VARIANTS[1].cmd
   -- NOTE: snacks keeps terminal handles in a weak table. In the rare case a
   -- hidden chat's handle was garbage-collected while its buffer survives,
   -- focus() may spawn a fresh process instead of reattaching. Unlikely in
   -- practice (the live buffer keeps the handle referenced).
-  return Snacks.terminal.focus(CMD, term_opts(count))
+  return Snacks.terminal.focus(cmd, term_opts(count))
 end
 
 --- Jump to chat number `n` if it's open; otherwise do nothing (with a hint).
@@ -174,10 +247,10 @@ function M.select(n)
       return M.open(n)
     end
   end
-  vim.notify("No Claude chat " .. n, vim.log.levels.WARN)
+  vim.notify("No chat " .. n, vim.log.levels.WARN)
 end
 
---- Toggle the most-recently-used chat, creating Chat 1 if none exist.
+--- Toggle the most-recently-used chat, creating a new one if none exist.
 function M.toggle_last()
   local list = chats()
   if #list == 0 then
@@ -185,7 +258,7 @@ function M.toggle_last()
   end
   local count = M.last or list[1].count
   M.last = count
-  return Snacks.terminal.toggle(CMD, term_opts(count))
+  return Snacks.terminal.toggle(cmd_for(count) or VARIANTS[1].cmd, term_opts(count))
 end
 
 --- Pick an open chat (by name) or create a new one via vim.ui.select.
@@ -193,12 +266,13 @@ function M.pick()
   local list = chats()
   local items = {}
   for _, c in ipairs(list) do
-    items[#items + 1] = { count = c.count, label = display(c.buf, c.count) }
+    -- Number the entries like the footer does, so two "claude" chats stay distinct.
+    items[#items + 1] = { count = c.count, label = ("%d. %s"):format(c.count, display(c.buf, c.count)) }
   end
   items[#items + 1] = { count = nil, label = "＋ New chat" }
 
   vim.ui.select(items, {
-    prompt = "Claude chats",
+    prompt = "Chats",
     format_item = function(item)
       return item.label
     end,
@@ -218,7 +292,7 @@ end
 function M.rename()
   local buf = vim.api.nvim_get_current_buf()
   local meta = vim.b[buf] and vim.b[buf].snacks_terminal
-  if not (type(meta) == "table" and meta.cmd == CMD) then
+  if not (type(meta) == "table" and is_chat_cmd(meta.cmd)) then
     -- Not focused in a chat: fall back to the last-used / first open chat.
     local list = chats()
     buf = nil
@@ -229,7 +303,7 @@ function M.rename()
     end
     buf = buf or (list[1] and list[1].buf)
     if not buf then
-      vim.notify("No Claude chat to rename", vim.log.levels.WARN)
+      vim.notify("No chat to rename", vim.log.levels.WARN)
       return
     end
   end

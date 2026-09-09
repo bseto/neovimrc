@@ -1,5 +1,6 @@
--- Claude Code, run as snacks.nvim floating terminals with support for
--- multiple independent chats. Logic lives in lua/util/claude.lua.
+-- AI-agent chats (Claude Code, Codex CLI) run as snacks.nvim floating
+-- terminals with support for multiple independent chats. Logic lives in
+-- lua/util/claude.lua; <leader>cn asks which agent variant to launch.
 --
 -- Keymaps (chosen to preserve muscle memory from the old greggh setup):
 --   <leader>cp   pick/open a chat (lists open chats by name + "New chat")
@@ -13,28 +14,28 @@ local keys = {
     function()
       require("util.claude").pick()
     end,
-    desc = "Claude: pick/open chat",
+    desc = "Chat: pick/open chat",
   },
   {
     "<leader>cn",
     function()
       require("util.claude").new()
     end,
-    desc = "Claude: new chat",
+    desc = "Chat: new chat",
   },
   {
     "<leader>cR",
     function()
       require("util.claude").rename()
     end,
-    desc = "Claude: rename chat",
+    desc = "Chat: rename chat",
   },
   {
     "<C-,>",
     function()
       require("util.claude").toggle_last()
     end,
-    desc = "Claude: toggle last chat",
+    desc = "Chat: toggle last chat",
     mode = { "n", "t" },
   },
 }
@@ -46,7 +47,7 @@ for i = 1, 9 do
     function()
       require("util.claude").select(i)
     end,
-    desc = "Claude: go to chat " .. i,
+    desc = "Chat: go to chat " .. i,
   }
 end
 

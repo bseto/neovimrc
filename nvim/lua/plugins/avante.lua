@@ -1,70 +1,76 @@
-return {
-  "yetone/avante.nvim",
-  event = "VeryLazy",
-  version = false,
-  build = "make",
-  opts = {
-    provider = "bifrost",
-    providers = {
-      bifrost = {
-        -- Claude/bedrock models MUST go through Bifrost's Anthropic-native route
-        -- (/anthropic), not the OpenAI-compat route (/openai). The OpenAI wire
-        -- format has nowhere to carry Anthropic's thinking-block `signature`, so
-        -- multi-turn replays drop it and the API 400s with
-        -- "messages.N.content.0.thinking.signature: Field required".
-        -- Inheriting from "claude" makes Avante speak native Anthropic, which
-        -- captures and round-trips the signature correctly.
-        __inherited_from = "claude",
-        auth_type = "api",
-        endpoint = "https://bifrost.stackadapt.dev/anthropic",
-        -- Key lives in the macOS Keychain, never in this repo.
-        -- Set it once: security add-generic-password -U -a "$USER" -s bifrost_api_key -w
-        api_key_name = "cmd:security find-generic-password -s bifrost_api_key -w",
-        -- Bifrost exposes Anthropic models with a bedrock/ prefix (see opencode/zed configs).
-        model = "bedrock/claude-opus-4-8",
-        timeout = 60000,
-        disable_tools = true,
-        extra_request_body = {
-          -- No temperature: Opus 4.8 uses adaptive thinking, which rejects sampling params.
-          max_tokens = 32768,
-        },
-      },
-      lmstudio = {
-        __inherited_from = "openai",
-        endpoint = "http://127.0.0.1:1234/v1",
-        api_key = "lm-studio",
-        model = "local-model", -- replace with the model name shown in LM Studio
-        timeout = 60000,
-        extra_request_body = {
-          temperature = 0.75,
-          max_tokens = 262144,
-        },
-      },
-    },
-  },
-  dependencies = {
-    "nvim-lua/plenary.nvim",
-    "MunifTanjim/nui.nvim",
-    "nvim-tree/nvim-web-devicons",
-    {
-      "HakonHarnes/img-clip.nvim",
-      event = "VeryLazy",
-      opts = {
-        default = {
-          embed_image_as_base64 = false,
-          prompt_for_file_name = false,
-          drag_and_drop = {
-            insert_mode = true,
-          },
-        },
-      },
-    },
-    {
-      "MeanderingProgrammer/render-markdown.nvim",
-      opts = {
-        file_types = { "markdown", "Avante" },
-      },
-      ft = { "markdown", "Avante" },
-    },
-  },
-}
+-- Avante is disabled in favour of CodeCompanion (see codecompanion.lua), which
+-- talks to the same Bifrost endpoint/key/model. The original spec is kept
+-- below, commented out, so it can be restored by uncommenting and deleting
+-- the `return {}`.
+return {}
+
+-- return {
+--   "yetone/avante.nvim",
+--   event = "VeryLazy",
+--   version = false,
+--   build = "make",
+--   opts = {
+--     provider = "bifrost",
+--     providers = {
+--       bifrost = {
+--         -- Claude/bedrock models MUST go through Bifrost's Anthropic-native route
+--         -- (/anthropic), not the OpenAI-compat route (/openai). The OpenAI wire
+--         -- format has nowhere to carry Anthropic's thinking-block `signature`, so
+--         -- multi-turn replays drop it and the API 400s with
+--         -- "messages.N.content.0.thinking.signature: Field required".
+--         -- Inheriting from "claude" makes Avante speak native Anthropic, which
+--         -- captures and round-trips the signature correctly.
+--         __inherited_from = "claude",
+--         auth_type = "api",
+--         endpoint = "https://bifrost.stackadapt.dev/anthropic",
+--         -- Key lives in the macOS Keychain, never in this repo.
+--         -- Set it once: security add-generic-password -U -a "$USER" -s bifrost_api_key -w
+--         api_key_name = "cmd:security find-generic-password -s bifrost_api_key -w",
+--         -- Bifrost exposes Anthropic models with a bedrock/ prefix (see opencode/zed configs).
+--         model = "bedrock/claude-opus-4-8",
+--         timeout = 60000,
+--         disabled_tools = { "web_search" },
+--         extra_request_body = {
+--           -- No temperature: Opus 4.8 uses adaptive thinking, which rejects sampling params.
+--           max_tokens = 32768,
+--         },
+--       },
+--       lmstudio = {
+--         __inherited_from = "openai",
+--         endpoint = "http://127.0.0.1:1234/v1",
+--         api_key = "lm-studio",
+--         model = "local-model", -- replace with the model name shown in LM Studio
+--         timeout = 60000,
+--         extra_request_body = {
+--           temperature = 0.75,
+--           max_tokens = 262144,
+--         },
+--       },
+--     },
+--   },
+--   dependencies = {
+--     "nvim-lua/plenary.nvim",
+--     "MunifTanjim/nui.nvim",
+--     "nvim-tree/nvim-web-devicons",
+--     {
+--       "HakonHarnes/img-clip.nvim",
+--       event = "VeryLazy",
+--       opts = {
+--         default = {
+--           embed_image_as_base64 = false,
+--           prompt_for_file_name = false,
+--           drag_and_drop = {
+--             insert_mode = true,
+--           },
+--         },
+--       },
+--     },
+--     {
+--       "MeanderingProgrammer/render-markdown.nvim",
+--       opts = {
+--         file_types = { "markdown", "Avante" },
+--       },
+--       ft = { "markdown", "Avante" },
+--     },
+--   },
+-- }
