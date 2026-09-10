@@ -42,7 +42,7 @@ local function render()
     lines[#lines + 1] = string.format(
       "%-38s %-10s %-18s %s",
       prefix .. clean(record.name),
-      clean(record.backend),
+      clean(record.kind or record.backend),
       clean(record.status),
       clean(record.message ~= "" and record.message or record.task)
     )
@@ -52,11 +52,11 @@ local function render()
   if current then
     lines = {
       clean(current.name) .. " · " .. clean(current.backend) .. " · " .. clean(current.status),
-      "h parent · i talk to supervisor · a archive/restore team · d delete team · A active/archived · q close",
+      "h parent · i supervisor · y copy takeover · a archive/restore · d delete · A active/archived · q close",
       "",
     }
     for _, record in ipairs(records) do
-      if record.parent == current.id then
+      if record.role == "worker" and record.parent == current.id then
         add(record, "  ↳ ")
       end
     end
@@ -64,6 +64,19 @@ local function render()
     if current.role == "supervisor" then
       lines[#lines + 1] = "Project brief (i opens the live supervisor conversation)"
       vim.list_extend(lines, vim.split(current.brief or "", "\n", { plain = true }))
+      lines[#lines + 1] = ""
+      lines[#lines + 1] = "Handoff · " .. clean(current.execution or "planning")
+      lines[#lines + 1] = "Phase: " .. clean(current.phase or "planning")
+      if current.plan_path then
+        lines[#lines + 1] = "Plan: " .. clean(current.plan_path)
+      end
+      local age = current.checkpoint_at and math.max(0, os.time() - math.floor(current.checkpoint_at))
+      lines[#lines + 1] = age and ("Last checkpoint: " .. math.floor(age / 60) .. "m ago")
+        or "Last checkpoint: never"
+      vim.list_extend(lines, vim.split(current.handoff or "No handoff saved yet.", "\n", { plain = true }))
+      lines[#lines + 1] = ""
+      lines[#lines + 1] = "$supervise-takeover " .. current.id .. " (Codex)"
+      lines[#lines + 1] = "/supervise-takeover " .. current.id .. " (Claude)"
     else
       lines[#lines + 1] = "Conversation"
       vim.list_extend(lines, read(directory .. "/" .. current.id .. "/chat.md"))
@@ -76,7 +89,7 @@ local function render()
     page = nil
     lines = {
       archived and "Teams (archived)" or "Teams",
-      "j/k select · l inspect · i chat · a archive/restore · d delete · A active/archived · q close",
+      "j/k select · l inspect · i chat · y copy takeover · a archive/restore · d delete · A active/archived · q close",
       "",
       string.format("%-38s %-10s %-18s %s", "Agent", "Backend", "State", "Task / update"),
     }
@@ -87,7 +100,7 @@ local function render()
       then
         add(record, "▾ ")
         for _, child in ipairs(records) do
-          if child.parent == record.id then
+          if child.role == "worker" and child.parent == record.id then
             add(child, "  ↳ ")
           end
         end
@@ -148,6 +161,23 @@ local function selected()
   return rows and rows[vim.api.nvim_win_get_cursor(view.win)[1]]
 end
 
+local function copy_takeover()
+  local record = find(selected() or page)
+  record = record and (record.parent and find(record.parent) or record)
+  if not record or record.role ~= "supervisor" then
+    vim.notify("Select a team first", vim.log.levels.INFO)
+    return
+  end
+  local owner = find(record.owner) or record
+  local prefix = (owner.backend or ""):match("^claude") and "/" or "$"
+  local command = prefix .. "supervise-takeover " .. record.id
+  vim.fn.setreg('"', command)
+  if vim.fn.has("clipboard") == 1 then
+    vim.fn.setreg("+", command)
+  end
+  vim.notify("Copied: " .. command)
+end
+
 local function move(direction)
   local row = vim.api.nvim_win_get_cursor(view.win)[1]
   if page then
@@ -175,7 +205,7 @@ local function enter()
   elseif page and find(page).role == "supervisor" then
     local record = find(page)
     M.hide()
-    require("util.claude").open_session(record)
+    require("util.claude").open_session(find(record.owner) or record)
   end
 end
 
@@ -188,7 +218,7 @@ local function chat()
   -- the worker's context and sees every revision.
   record = record.parent and find(record.parent) or record
   M.hide()
-  require("util.claude").open_session(record)
+  require("util.claude").open_session(find(record.owner) or record)
 end
 
 function M.manage(action, target)
@@ -196,6 +226,7 @@ function M.manage(action, target)
     return
   end
   local record = target or find(selected() or page)
+  record = record and (record.team_id and find(record.team_id) or record)
   record = record and (record.parent and find(record.parent) or record)
   if not record then
     vim.notify("Select a team first", vim.log.levels.INFO)
@@ -217,7 +248,8 @@ function M.manage(action, target)
         rows = {}
         local chats = require("util.claude")
         if chats.after_manage then
-          chats.after_manage(record.id, action)
+          local ok, value = pcall(vim.json.decode, result.stdout or "")
+          chats.after_manage(record.id, action, ok and value.chat_ids or nil)
         end
         refresh()
       end)
@@ -279,6 +311,7 @@ function M.toggle(show_archived)
         render()
       end,
       i = chat,
+      y = copy_takeover,
       a = function()
         M.manage("archive")
       end,

@@ -95,6 +95,9 @@ local function team_record(meta)
   end
   local ok, record = pcall(vim.json.decode, file:read("*a"))
   file:close()
+  if ok and record.team_id then
+    return team_record({ env = { NVIM_TEAM_SESSION = record.team_id } })
+  end
   return ok and record or nil
 end
 
@@ -400,10 +403,12 @@ function M.manage_selected(action)
   require("util.agent_team").manage(action, record)
 end
 
-function M.after_manage(id, action)
+function M.after_manage(id, action, chat_ids)
   for _, term in ipairs(Snacks.terminal.list()) do
     local meta = vim.b[term.buf].snacks_terminal
-    if meta and meta.env and meta.env.NVIM_TEAM_SESSION == id then
+    local record = meta and team_record(meta)
+    local session = meta and meta.env and meta.env.NVIM_TEAM_SESSION
+    if session and (session == id or (record and record.id == id) or vim.tbl_contains(chat_ids or {}, session)) then
       if action == "archive" or action == "delete" then
         if active == term then
           M.hide()

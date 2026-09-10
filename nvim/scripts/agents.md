@@ -35,12 +35,77 @@ Install the shared skill once for each client (both links use the same source):
 
     ln -s "$HOME/.config/nvim/skills/supervise" "$HOME/.claude/skills/supervise"
     ln -s "$HOME/.config/nvim/skills/supervise" "$HOME/.agents/skills/supervise"
+    ln -s "$HOME/.config/nvim/skills/supervise-takeover" "$HOME/.claude/skills/supervise-takeover"
+    ln -s "$HOME/.config/nvim/skills/supervise-takeover" "$HOME/.agents/skills/supervise-takeover"
 
 Open a new chat with `<leader>cn`, brainstorm your project, then invoke
 `/supervise project-name` in Claude or `$supervise project-name` in Codex.
 The same conversation becomes the supervisor. Repeating
 the command updates its brief rather than creating another team. Existing chats
 launched before this integration need a new launch to receive its MCP tools.
+
+Invoking the skill starts discussion. The supervisor coordinates and answers
+worker questions; workers perform investigation, implementation, testing, and
+detailed review. It starts work only within your explicit authorization.
+
+Every project has a planning, execution, and review phase. The planner uses
+plain `claude --model opus` with the normal account selected by your shell
+wrapper. Inherited Anthropic gateway/API environment overrides are removed so
+a Bifrost supervisor does not redirect the planner. Keep that Claude account
+logged in; account limits and settings still apply. The planner researches,
+asks the supervisor questions, and saves a detailed plan before implementation.
+
+Executors use `codex-bf --model gpt-5.6-terra` with medium reasoning, explicitly
+selecting the Bifrost provider. This balanced default can be overridden per
+worker; availability depends on the gateway key. No automatic model or billing
+fallback is configured. The planner defaults to Opus; a supported Fable model
+can be passed explicitly. Each worker keeps its role and model on resume.
+
+After execution, the supervisor asks whether review should use Bifrost GPT or
+Claude subscription, then starts a separate reviewer. Review findings go back
+to executors for fixes and then back to the reviewer. All agents ask the
+supervisor first; it answers from agreed decisions and escalates only unresolved
+questions to you. The tools enforce phase/backend selection and require a
+completed planner plus saved plan before execution. The skill requires review
+findings to be resolved, beyond the tool's completed-review check.
+
+`team_checkpoint` saves `phase`, the absolute `plan_path`, and the chosen
+`reviewer_backend`. Authorization remains separate: planning permission alone
+does not authorize implementation. These fields and worker roles/models survive
+takeover and appear in team summaries. Team rows show planner/executor/reviewer.
+
+The supervisor saves a 1–3 paragraph goal in `brief.md` and a short current
+handoff in `handoff.md`, beside the authoritative `agent.json` in the team's
+state directory. It checkpoints decisions, next steps, and authorization scope
+throughout the conversation. Worker records
+remain live independently, so takeover can see updates since the last checkpoint.
+Assignments, follow-ups, state changes, and full results are also recorded
+automatically in each worker's `activity.jsonl`. The worker record retains its
+current assignment and last report. The supervisor only needs to checkpoint
+decisions, authorization, and next steps, rather than duplicate worker bookkeeping.
+The detail page shows the age of that explicit checkpoint; hooks and takeover
+do not reset its timestamp. An absent timestamp displays as "never".
+
+For a fresh supervisor context, clear the conversation using your client's
+reset command (for example `/clear` in Claude), then invoke
+`/supervise-takeover <team-id>` in Claude or `$supervise-takeover <team-id>` in
+Codex. You can also open a fresh Neovim agent chat and run that command there.
+The team detail page displays both commands with the stable team ID. Takeover
+commands can be copied with `y` from a team or worker row or detail page. The
+command uses the current supervisor's client syntax and goes to the unnamed
+register and, when available, the system clipboard. Both client variants remain
+visible in the detail page if you want to switch clients.
+Takeover preserves workers, transcripts, and planning/authorized/paused state; `i` opens
+the current supervisor. It returns a fresh ownership token and rejects mutations
+using the old token. This protects team-tool calls, not arbitrary shell activity.
+An already-running worker finishes its current turn normally.
+
+After installing this update, restart Neovim for the view changes and launch a
+fresh agent chat for the new MCP tools and Claude SessionStart hook. Exit old
+supervisor processes before the first takeover: MCP servers already running the
+previous code cannot enforce ownership tokens. Subsequent takeovers work with
+the updated tools after a reset or from a new chat. The SessionStart hook records
+Claude's new session ID after `/clear`; Codex supplies `CODEX_THREAD_ID` explicitly.
 
 `<leader>ct` opens the team view. `j/k` select rows, `l` or Enter inspect an
 agent, `h` returns to its parent, `i` opens the supervisor's live chat, and `q`
@@ -62,9 +127,20 @@ an entry or `i` to reopen it. Ordinary chats can also be archived, even before
 they become supervisors. `?` in the sidebar lists all its actions. Archive is a
 way to hide something you might return to; it does not pause or cancel work.
 
-The supervisor gets five session-scoped MCP tools: `team_start`, `worker_start`,
-`team_status`, `agent_send`, and `worker_stop`. Workers can use `codex-bf`,
-`codex`, `claude`, or `claude-bf`. They report a structured result, question,
+The supervisor gets seven session-scoped MCP tools: `team_start`, `team_takeover`,
+`team_checkpoint`, `worker_start`, `team_status`, `agent_send`, and `worker_stop`.
+Mutating calls carry an ownership token; worker starts and follow-ups require
+saved execution authorization. Inbox reads return short summaries rather than
+repeating the entire brief and assignments.
+`team_status` returns all worker summaries on its first call, then only changes
+within that MCP connection. `workers: []` means no updates, while `active` counts
+running workers. `full=true` recovers the full overview; a server reconnect or
+takeover resets the inbox. Reports and assignments are capped at 1200 characters
+per field with paths to full activity and transcripts. Updates that arrive
+between polls are returned immediately; unchanged running teams wait up to
+30 seconds. The inbox does not alter the durable records or Neovim's full view.
+
+Workers can use `codex-bf`, `codex`, `claude`, or `claude-bf`. They report a structured result, question,
 or permission blocker at the end of a turn. Answering a question resumes the
 same backend session. The supervisor uses a 30-second inbox wait while workers
 are active; it must stay in that loop to receive updates autonomously. If it

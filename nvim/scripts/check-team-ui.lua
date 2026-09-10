@@ -11,6 +11,7 @@ vim.fn.writefile({ "## Worker", "", "Which color?" }, state .. "/worker/chat.md"
 vim.env.NVIM_TEAM_HOME = state
 local system = vim.system
 local is_archived, deleted, mutation
+local owner_backend = "codex"
 vim.system = function(args, _, callback)
   if args[3] == "manage" then
     mutation = args[4]
@@ -33,7 +34,17 @@ vim.system = function(args, _, callback)
         backend = "claude",
         status = "supervising",
         brief = "Use blue",
+        handoff = "Worker needs a color decision.",
+        execution = "planning",
+        checkpoint_at = os.time() - 120,
+        owner = "successor",
         archived = is_archived,
+      },
+      {
+        id = "successor",
+        role = "chat",
+        team_id = "supervisor",
+        backend = owner_backend,
       },
       {
         id = "worker",
@@ -67,18 +78,37 @@ local function key(lhs)
   assert(mapping.callback, lhs)
   mapping.callback()
 end
+local setreg, copied = vim.fn.setreg, {}
+vim.fn.setreg = function(register, value)
+  copied[register] = value
+end
 key("j")
 assert(vim.api.nvim_win_get_cursor(0)[1] == 5)
+key("y")
+assert(copied['"'] == "$supervise-takeover supervisor")
 key("j")
 assert(vim.api.nvim_win_get_cursor(0)[1] == 6)
+key("y")
+assert(copied['"'] == "$supervise-takeover supervisor")
 key("l")
+key("y")
+assert(copied['"'] == "$supervise-takeover supervisor")
 local lines = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
 assert(lines:find("Which color?", 1, true))
 key("h")
 lines = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
 assert(lines:find("Use blue", 1, true))
+assert(lines:find("Worker needs a color decision.", 1, true))
+assert(lines:find("$supervise-takeover supervisor", 1, true))
+assert(lines:find("Last checkpoint: 2m ago", 1, true))
+owner_backend = "claude"
+assert(vim.wait(2000, function()
+  key("y")
+  return copied['"'] == "/supervise-takeover supervisor"
+end, 100))
+vim.fn.setreg = setreg
 key("i")
-assert(opened == "supervisor")
+assert(opened == "successor")
 team.toggle()
 key("h")
 key("j")
