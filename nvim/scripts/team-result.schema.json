@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string", "enum": ["result", "question", "blocked"] },
+    "message": { "type": "string" }
+  },
+  "required": ["kind", "message"],
+  "additionalProperties": false
+}

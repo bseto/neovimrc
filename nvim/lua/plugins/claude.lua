@@ -6,9 +6,17 @@
 --   <leader>cp   pick/open a chat (lists open chats by name + "New chat")
 --   <leader>cn   open a new chat immediately
 --   <leader>cR   rename the current (or last-used) chat
---   <leader>c1-9 jump straight to chat 1..9 (the number shown in the footer)
+--   <leader>ct   inspect persistent supervisor teams
+--   <leader>c1-9 jump straight to chat 1..9
 --   <C-,>        toggle the last-used chat (creates Chat 1 if none exist)
 local keys = {
+  {
+    "<leader>ct",
+    function()
+      require("util.agent_team").toggle()
+    end,
+    desc = "Chat: team view",
+  },
   {
     "<leader>cp",
     function()
