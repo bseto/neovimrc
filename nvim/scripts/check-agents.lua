@@ -6,45 +6,32 @@ Snacks = require("snacks")
 Snacks.setup({})
 
 local Status = require("util.claude_status")
-local command = Status.command("codex")
-assert(command == Status.command("codex"))
-local config = vim.system({ "zsh", "-c", command .. " features list" }, { text = true }):wait()
-assert(config.code == 0, config.stderr)
-local file = vim.fn.tempname()
-local hook = vim
-  .system({ "sh", "scripts/agent-status.sh", "busy" }, {
-    env = { NVIM_AGENT_STATUS_FILE = file },
-  })
-  :wait()
-assert(hook.code == 0 and vim.fn.readfile(file)[1] == "busy")
-vim.fn.delete(file)
-
+-- Status follows the record's current session ID, not the launch ID, so it survives /clear.
+local status_home = vim.fn.tempname()
+vim.env.NVIM_TEAM_HOME = status_home
+vim.fn.mkdir(status_home .. "/launch-id", "p")
+vim.fn.writefile(
+  { vim.json.encode({ id = "launch-id", backend = "claude", session_id = "after-clear" }) },
+  status_home .. "/launch-id/agent.json"
+)
 local session_file = vim.fn.tempname()
-vim.fn.writefile({ vim.json.encode({ pid = 103, kind = "interactive", status = "waiting" }) }, session_file)
-local system, glob, jobpid = vim.system, vim.fn.glob, vim.fn.jobpid
-vim.system = function(_, _, callback)
-  callback({ code = 0, stdout = "101 1\n102 101\n103 102\n" })
-end
+vim.fn.writefile({ vim.json.encode({ sessionId = "after-clear", kind = "interactive", status = "waiting" }) }, session_file)
+local glob = vim.fn.glob
 vim.fn.glob = function()
   return { session_file }
 end
-vim.fn.jobpid = function()
-  return 101
-end
 local test_buffer = vim.api.nvim_create_buf(false, true)
-local detected, complete
+vim.b[test_buffer].snacks_terminal = { env = { NVIM_TEAM_SESSION = "launch-id" } }
+local detected
 Status.poll({ { buf = test_buffer, cmd = "claude" } }, function(_, state)
   detected = state
-end, function()
-  complete = true
-end)
-assert(vim.wait(1000, function()
-  return complete
-end))
+end, function() end)
 assert(detected == "waiting")
-vim.system, vim.fn.glob, vim.fn.jobpid = system, glob, jobpid
+vim.fn.glob = glob
 vim.api.nvim_buf_delete(test_buffer, { force = true })
 vim.fn.delete(session_file)
+vim.fn.delete(status_home, "rf")
+vim.env.NVIM_TEAM_HOME = nil
 
 local termopen = vim.fn.termopen
 vim.fn.termopen = function(_, opts)
@@ -52,9 +39,6 @@ vim.fn.termopen = function(_, opts)
 end
 local status_callback
 package.loaded["util.claude_status"] = {
-  command = function(cmd)
-    return cmd
-  end,
   poll = function(_, callback, done)
     status_callback = callback
     done()

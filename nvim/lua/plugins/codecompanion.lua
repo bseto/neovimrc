@@ -1,5 +1,5 @@
 -- CodeCompanion, wired to StackAdapt's Bifrost gateway. Replaces Avante
--- (lua/plugins/avante.lua is kept, commented out, for easy restoring).
+-- (removed; its spec is in git history).
 --
 -- Bifrost fronts Claude on its Anthropic-native route (/anthropic), so we extend
 -- the stock `anthropic` adapter and only swap the URL, the key and the model

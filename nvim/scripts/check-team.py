@@ -53,7 +53,7 @@ result = {"kind": "result" if resumed else "question", "message": "Done with blu
 print('{"type":"thread.started","thread_id":"test-session"}', flush=True)
 print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":json.dumps(result)}}), flush=True)
 if "-o" in args:
-    Path(args[args.index("-o") + 1]).write_text(json.dumps(result))
+    Path(args[args.index("-o") + 1]).write_text(json.dumps(result) if "--output-schema" in args else "Done. " + json.dumps(result))
 else:
     print(json.dumps({"type":"result", "structured_output":result}), flush=True)
 ''')
@@ -64,7 +64,7 @@ else:
     team.team_start(supervisor, "Color", "Implement the agreed color. Ask if unspecified.")
     team.team_start(supervisor, "Color", "Keep scope to color.")
     assert len(team.records()) == 1
-    worker = team.worker_start(supervisor, "Choose color", "Ask the supervisor which color.", "codex")
+    worker = team.worker_start(supervisor, "Choose color", "Ask the supervisor which color.", "codex-bf")
     question = wait(worker["id"])
     assert question["status"] == "needs supervisor", question
     assert question["session_id"] == "test-session"
@@ -128,9 +128,9 @@ else:
         raise AssertionError("Invalid ID accepted")
     except ValueError:
         pass
-    invalid = team.worker_start(supervisor, "Invalid", "INVALID_TEST", "codex")
+    invalid = team.worker_start(supervisor, "Invalid", "INVALID_TEST", "codex-bf")
     assert wait(invalid["id"])["status"] == "error"
-    stopping = team.worker_start(supervisor, "Stop", "STOP_TEST", "codex")
+    stopping = team.worker_start(supervisor, "Stop", "STOP_TEST", "codex-bf")
     time.sleep(0.3)
     try:
         team.agent_send(supervisor, stopping["id"], "Second turn")
@@ -255,7 +255,7 @@ else:
     assert "--model" in resumed_args and "resume" in resumed_args
     time.sleep(0.3)
     successor, new_session = str(uuid.uuid4()), str(uuid.uuid4())
-    team.save({"id": successor, "role": "chat", "backend": "codex", "cwd": str(root), "created": time.time()})
+    team.save({"id": successor, "role": "chat", "backend": "codex-bf", "cwd": str(root), "created": time.time()})
     transfer = team.dispatch(successor, "team_takeover", {"team_id": supervisor, "session_id": new_session})
     assert transfer["brief"] == "Keep scope to color."
     assert transfer["supervisor"]["execution"] == "authorized"
@@ -274,10 +274,6 @@ else:
     assert team.alive(active_worker["pid"])
     team.dispatch(successor, "worker_stop", {"agent_id": active_worker["id"], "owner_token": successor_token})
     assert wait(active_worker["id"])["status"] == "stopped"
-    # Legacy direct workers may use a different backend; new workflow executors use Bifrost.
-    migrated = team.read(worker["id"])
-    migrated["backend"] = "codex-bf"
-    team.save(migrated)
     team.dispatch(successor, "agent_send", {"agent_id": worker["id"], "message": "Review blue.", "owner_token": successor_token})
     assert wait(worker["id"])["message"] == "Done with blue"
     assert team.read(worker["id"])["parent"] == supervisor
@@ -323,7 +319,7 @@ else:
     team.tmux = lambda *args, **kwargs: subprocess.CompletedProcess(args, 1)
     project_file = root / "keep.txt"
     project_file.write_text("Project files survive")
-    running = team.worker_start(supervisor, "Delete running worker", "STOP_TEST", "codex")
+    running = team.worker_start(supervisor, "Delete running worker", "STOP_TEST", "codex-bf")
     time.sleep(0.3)
     team.manage_team(supervisor, "delete")
     assert not team.directory(supervisor).exists()

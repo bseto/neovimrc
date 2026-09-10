@@ -13,12 +13,12 @@ Status symbols: `●` working, `!` needs approval, `○` ready for input,
 `×` exited, `?` unknown. `*` marks a response that finished while another
 buffer was focused. Opening that chat clears it. Status updates once per second.
 
-Claude status comes from its session files, matched by process ancestry.
-The default, personal, and inherited `CLAUDE_CONFIG_DIR` locations are checked.
-New Codex chats receive launch-scoped lifecycle hooks that write status into
-temporary files. They observe events without deciding approvals. Unknown or
-unsupported events remain unknown; arbitrary conversational questions aren't
-separately classified. Very brief state transitions between polls can be missed.
+Claude status comes from its session registry, matched by the session ID the
+launcher's SessionStart hook records (so it survives `/clear`). The default,
+personal, and inherited `CLAUDE_CONFIG_DIR` locations are checked. Codex status
+comes from launch-scoped lifecycle hooks that record it in the chat's team
+record. Hooks observe events without deciding approvals. Very brief state
+transitions between polls can be missed.
 
 Restart Neovim to load these changes. Existing agent processes aren't migrated.
 
@@ -140,7 +140,7 @@ per field with paths to full activity and transcripts. Updates that arrive
 between polls are returned immediately; unchanged running teams wait up to
 30 seconds. The inbox does not alter the durable records or Neovim's full view.
 
-Workers can use `codex-bf`, `codex`, `claude`, or `claude-bf`. They report a structured result, question,
+Planners run on `claude`, executors on `codex-bf`, reviewers on the chosen one. They report a structured result, question,
 or permission blocker at the end of a turn. Answering a question resumes the
 same backend session. The supervisor uses a 30-second inbox wait while workers
 are active; it must stay in that loop to receive updates autonomously. If it

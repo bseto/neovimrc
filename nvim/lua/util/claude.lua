@@ -6,10 +6,7 @@ local Status = require("util.claude_status")
 local sidebar
 local active
 local terminals = {}
-local polling = false
 local namespace = vim.api.nvim_create_namespace("agent_sidebar")
-local status_directory = vim.fn.tempname()
-vim.fn.mkdir(status_directory, "p", 448)
 local states = {
   busy = { "●", "Working", "DiagnosticInfo" },
   waiting = { "!", "Needs approval", "DiagnosticWarn" },
@@ -285,7 +282,7 @@ local function term_opts(count, session)
   return {
     count = count,
     cwd = root(),
-    env = { NVIM_AGENT_STATUS_FILE = status_directory .. "/" .. count, NVIM_TEAM_SESSION = session },
+    env = { NVIM_TEAM_SESSION = session },
     win = {
       position = "float",
       width = function()
@@ -362,15 +359,7 @@ end
 local function spawn(cmd, session)
   local n = next_count(chats(true))
   M.last = n
-  vim.fn.delete(status_directory .. "/" .. n)
-  if not session then
-    local result = vim.system({ "python3", "-c", "import uuid; print(uuid.uuid4())" }, { text = true }):wait()
-    if result.code ~= 0 then
-      vim.notify(result.stderr, vim.log.levels.ERROR)
-      return
-    end
-    session = vim.trim(result.stdout)
-  end
+  session = session or vim.trim(vim.fn.system("uuidgen")):lower()
   local term = Snacks.terminal.open(variant_for(cmd).launch, term_opts(n, session))
   if term then
     terminals[n] = term
@@ -580,10 +569,9 @@ timer:start(
   1000,
   vim.schedule_wrap(function()
     local list = chats()
-    if polling or #list == 0 then
+    if #list == 0 then
       return
     end
-    polling = true
     Status.poll(list, function(chat, state)
       local previous = vim.b[chat.buf].claude_chat_status
       local focused = vim.api.nvim_get_current_buf() == chat.buf
@@ -593,17 +581,13 @@ timer:start(
         vim.b[chat.buf].claude_chat_unread = false
       end
       vim.b[chat.buf].claude_chat_status = state
-    end, function()
-      polling = false
-      M.refresh_all()
-    end)
+    end, M.refresh_all)
   end)
 )
 vim.api.nvim_create_autocmd("VimLeavePre", {
   callback = function()
     timer:stop()
     timer:close()
-    vim.fn.delete(status_directory, "rf")
   end,
 })
 

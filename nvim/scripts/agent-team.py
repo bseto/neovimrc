@@ -18,7 +18,7 @@ import time
 import uuid
 
 SCRIPT = Path(__file__).resolve()
-BACKENDS = ("claude", "claude-bf", "codex", "codex-bf")
+BACKENDS = ("claude", "claude-bf", "codex-bf")
 EXECUTION_MODEL = "gpt-5.6-terra"
 SCHEMA = json.loads(SCRIPT.with_name("team-result.schema.json").read_text())
 ROOT = Path(os.environ.get("NVIM_TEAM_HOME", Path.home() / ".local/state/nvim/agent-teams"))
@@ -291,6 +291,7 @@ def owned(supervisor, agent_id):
 
 
 def alive(pid):
+    # ponytail: liveness only; a pid recycled after reboot passes. Match `ps -o command=` if that bites.
     if not pid:
         return False
     try:
@@ -484,19 +485,15 @@ def team_status(supervisor, wait_seconds=0, full=False, inbox=None):
 def worker_command(record, output):
     backend = record["backend"]
     session = record.get("session_id")
-    if backend.startswith("codex"):
+    if backend == "codex-bf":
         args = [backend, "exec", "-c", 'sandbox_mode="workspace-write"',
-                "-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"']
+                "-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"',
+                "-c", 'model_provider="bifrost"', "-c", 'model_reasoning_effort="medium"']
         if session:
             args += ["resume", session]
         if record.get("model"):
             args += ["--model", record["model"]]
-        if backend == "codex-bf":
-            args += ["-c", 'model_provider="bifrost"', "-c", 'model_reasoning_effort="medium"']
-        args += ["--json", "-o", str(output)]
-        if not session:
-            args += ["--output-schema", str(SCRIPT.with_name("team-result.schema.json"))]
-        args += ["-"]
+        args += ["--json", "-o", str(output), "--output-schema", str(SCRIPT.with_name("team-result.schema.json")), "-"]
     else:
         args = [backend, "-p", "--verbose", "--output-format", "stream-json",
                 "--permission-mode", "auto", "--permission-prompts", "none",
@@ -599,7 +596,8 @@ def run_worker(agent_id, run_id):
                     except ValueError:
                         continue
                     session = event.get("thread_id") or event.get("session_id")
-                    if session:
+                    if session and session != record.get("session_id"):
+                        record["session_id"] = session
                         with locked(agent_id):
                             current = read(agent_id)
                             current["session_id"] = session
