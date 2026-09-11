@@ -22,6 +22,51 @@ transitions between polls can be missed.
 
 Restart Neovim to load these changes. Existing agent processes aren't migrated.
 
+Worker-report wakeups are enabled by default for newly launched Claude supervisors.
+Open a fresh Claude chat without setting an environment variable; the
+SessionStart hook registers that session's private socket in a mode-0600
+sidecar. Existing running chats are not changed. Codex supervisors remain on
+`team_status` polling. Set `NVIM_TEAM_DELIVERY=poll` before launching Neovim to
+explicitly use polling for new Claude chats too. Team metadata reports
+`delivery: events` only while the current Claude owner's registered endpoint
+matches its current session; takeover to Codex or a stale/missing endpoint
+reports polling instead.
+
+The runner saves the complete worker result first, then sends a concise native
+peer report only while execution is `authorized`. Pause, finish, deletion,
+takeover, and session reset are serialized against delivery. Receipts distinguish
+a complete socket write from unconfirmed transport acceptance and unconfirmed
+model processing; delivery failure never changes completed worker work and is
+shown in the worker summary. There is no background retry. Use
+`team_status(full=true)` to recover any report after a failed or missing wakeup;
+stable event IDs make ambiguous repeats recognizable.
+
+The isolated real-client probes are runnable from the `nvim` directory and make
+small real model calls. `claude-capture` is a hook helper, not a standalone
+command: it requires Claude's SessionStart JSON on stdin and messaging variables
+in the hook environment. In the first terminal, launch Claude with that hook
+without changing the existing inbound controls:
+
+    probe_dir="$(mktemp -d)"
+    probe_script="$PWD/scripts/probe-event-delivery.py"
+    probe_settings="$(python3 -c 'import json, shlex, sys; command = shlex.join(("python3", sys.argv[1], "claude-capture", "--out", sys.argv[2])); print(json.dumps({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}}))' "$probe_script" "$probe_dir/endpoint.json")"
+    printf 'Private probe directory for terminal 2: %s\n' "$probe_dir"
+    claude --settings "$probe_settings"
+
+After Claude is idle, paste the printed private directory into a second terminal
+in the same `nvim` checkout and send the harmless event:
+
+    probe_dir='/paste/the/printed/private/path'
+    python3 scripts/probe-event-delivery.py claude-send --endpoint "$probe_dir/endpoint.json" --message 'Harmless probe'
+
+Exit the isolated Claude session and remove the private directory when finished.
+The separate Codex probe is:
+
+    python3 scripts/probe-event-delivery.py codex --model gpt-5.6-terra
+
+It proves app-server multi-client tool-output delivery only; it does not enable
+Codex supervisor wakeups because the current TUI is not attached to that engine.
+
 ## Supervisor teams
 
 New Claude and Codex chats run inside a dedicated `nvim-agents` tmux
@@ -70,7 +115,9 @@ completed planner plus saved plan before execution. The skill requires review
 findings to be resolved, beyond the tool's completed-review check.
 
 `team_checkpoint` saves `phase`, the absolute `plan_path`, and the chosen
-`reviewer_backend`. Authorization remains separate: planning permission alone
+`reviewer_backend`; `handoff` may be omitted to keep the saved one. Stopping a
+`done` worker keeps it `done`, and the finish gate compares reviewer and executor
+completion times, so later stops never make a review look stale. Authorization remains separate: planning permission alone
 does not authorize implementation. These fields and worker roles/models survive
 takeover and appear in team summaries. Team rows show planner/executor/reviewer.
 
@@ -133,24 +180,37 @@ Mutating calls carry an ownership token; worker starts and follow-ups require
 saved execution authorization. Inbox reads return short summaries rather than
 repeating the entire brief and assignments.
 `team_status` returns all worker summaries on its first call, then only changes
-within that MCP connection. `workers: []` means no updates, while `active` counts
+within that MCP connection: a worker already reported comes back with its id, name,
+status, and the fields that changed, so assignments and paths are not echoed again. `workers: []` means no updates, while `active` counts
 running workers. `full=true` recovers the full overview; a server reconnect or
 takeover resets the inbox. Reports and assignments are capped at 1200 characters
 per field with paths to full activity and transcripts. Updates that arrive
 between polls are returned immediately; unchanged running teams wait up to
 30 seconds. The inbox does not alter the durable records or Neovim's full view.
+If only a run ID or report text beyond the display cutoff changed, the compact
+update carries `report_changed`, the new `run_id`, and the detail path.
+Summaries carry `last_error` while a worker is retrying a failed connection or
+API call, and backend exit errors include the last lines of `backend.log`. Every
+tool call's duration is appended to the team's `mcp.log`; Claude Code itself
+backgrounds any tool call past two minutes and delivers it as a notification.
 
 Planners run on `claude`, executors on `codex-bf`, reviewers on the chosen one. They report a structured result, question,
-or permission blocker at the end of a turn. Answering a question resumes the
-same backend session. The supervisor uses a 30-second inbox wait while workers
-are active; it must stay in that loop to receive updates autonomously. If it
-ends its turn, tell it to check its team. Opening the UI alone does not send
-prompts or wake a paused supervisor.
+or permission blocker at the end of a turn. A turn ends when the model stops
+calling tools, so an interim message becomes that turn's report. Answering a
+question resumes the same backend session. In polling mode, the supervisor uses
+a 30-second inbox wait while workers are active and must stay in that loop to
+receive updates autonomously. In event mode, the verified Claude peer message
+wakes the idle session; if it does not arrive, tell the supervisor to check its
+team. Opening the UI alone does not send prompts or wake a paused supervisor.
 
 Codex workers use workspace-write with automatic approval review; Claude
 workers use auto mode and deny requests that would require an interactive
 permission prompt. No approval is converted into a conversational question or
-bypassed. Workers share the supervisor's directory by default. For concurrent
+bypassed. Codex workers pass `--skip-git-repo-check`, so any existing directory
+works as `cwd`; if a Codex plugin's OAuth has expired they report `blocked`, and
+`codex mcp login <server>` followed by `agent_send` resumes them. Claude workers
+accept `mcp_config` (file path or JSON) for extra MCP servers; claude.ai
+connectors are unavailable in headless mode. Workers share the supervisor's directory by default. For concurrent
 writers, the supervisor must supply separate existing worktree directories;
 this version does not create or merge worktrees automatically.
 

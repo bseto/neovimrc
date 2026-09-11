@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import re
 import shlex
 import signal
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -42,6 +44,8 @@ def save(record):
         fields = ("run_id", "assignment", "status", "message")
         if any(previous.get(key) != record.get(key) for key in fields):
             record["activity_at"] = record["updated"]
+            if record.get("status") == "done" and previous.get("status") != "done":
+                record["done_at"] = record["updated"]
             if record.get("message") and record.get("status") not in ("starting", "working", "stopping"):
                 record["last_report"] = record["message"]
             event = {key: record[key] for key in (*fields, "updated") if key in record}
@@ -59,6 +63,24 @@ def locked(agent_id):
     with (folder / "lock").open("a") as file:
         fcntl.flock(file, fcntl.LOCK_EX)
         yield
+
+
+@contextlib.contextmanager
+def delivery_locked(team_id):
+    folder = directory(team_id)
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (folder / "delivery.lock").open("a") as file:
+        fcntl.flock(file, fcntl.LOCK_EX)
+        yield
+
+
+def write_private_json(path, value):
+    temporary = path.with_name(path.name + "." + str(uuid.uuid4()))
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as file:
+        json.dump(value, file)
+        file.write("\n")
+    temporary.replace(path)
 
 
 def records():
@@ -90,12 +112,14 @@ def supervisor_command(record, exists):
               "args": [str(SCRIPT), "mcp", "--supervisor", agent_id],
               "env": {"NVIM_TEAM_HOME": str(ROOT)}}
     if backend.startswith("claude"):
-        hook = shlex.join([sys.executable, str(SCRIPT), "hook", "--supervisor", agent_id,
-                           "--root", str(ROOT), "--status", "idle"])
+        hooks = {}
+        for event, status in (("SessionStart", "idle"), ("SessionEnd", "exited")):
+            hook = shlex.join([sys.executable, str(SCRIPT), "hook", "--supervisor", agent_id,
+                               "--root", str(ROOT), "--status", status])
+            hooks[event] = [{"hooks": [{"type": "command", "command": hook}]}]
         return [backend, "--enable-auto-mode", "--mcp-config",
                 json.dumps({"mcpServers": {"nvim_team": server}}),
-                "--settings", json.dumps({"hooks": {"SessionStart": [{"hooks": [
-                    {"type": "command", "command": hook}]}]}}),
+                "--settings", json.dumps({"hooks": hooks}),
                 "--resume" if exists else "--session-id", record["session_id"]]
     command = [backend]
     if exists:
@@ -117,19 +141,37 @@ def supervisor_command(record, exists):
 
 def supervisor_hook(agent_id, status):
     payload = json.load(sys.stdin)
-    with locked(agent_id):
-        record = read(agent_id)
-        session = payload.get("session_id")
-        if session:
-            record["session_id"] = str(uuid.UUID(session))
-        record["chat_status"] = status
-        save(record)
+    initial = read(agent_id)
+    with delivery_locked(initial.get("team_id", agent_id)):
+        with locked(agent_id):
+            record = read(agent_id)
+            session = payload.get("session_id")
+            if session:
+                session = str(uuid.UUID(session))
+            stale_end = status == "exited" and session and session != record.get("session_id")
+            if not stale_end:
+                if session:
+                    record["session_id"] = session
+                record["chat_status"] = status
+                save(record)
+            capture = record.get("delivery") == "events" and record["backend"].startswith("claude")
+        endpoint = directory(agent_id) / "delivery-endpoint.json"
+        if status == "exited" and not stale_end:
+            endpoint.unlink(missing_ok=True)
+        elif status != "exited" and capture and os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET"):
+            value = {"session_id": record.get("session_id"),
+                     "socket": os.environ["CLAUDE_CODE_MESSAGING_SOCKET"],
+                     "token": os.environ.get("CLAUDE_CODE_MESSAGING_TOKEN")}
+            write_private_json(endpoint, value)
 
 
 def launch(backend, agent_id):
     if backend not in BACKENDS:
         raise ValueError("Unsupported supervisor backend")
     agent_id = str(uuid.UUID(agent_id))
+    requested_delivery = os.environ.get("NVIM_TEAM_DELIVERY", "events" if backend.startswith("claude") else "poll")
+    if requested_delivery not in ("poll", "events"):
+        raise ValueError("NVIM_TEAM_DELIVERY must be poll or events")
     with locked(agent_id):
         exists = (directory(agent_id) / "agent.json").exists()
         record = read(agent_id) if exists else {
@@ -140,9 +182,17 @@ def launch(backend, agent_id):
         }
         if record.get("deleting"):
             raise ValueError("Team is being deleted")
-        save(record)
         name = session_name(agent_id)
-        if tmux("has-session", "-t", name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+        running = tmux("has-session", "-t", name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        if not running:
+            record["delivery"] = "events" if requested_delivery == "events" and backend.startswith("claude") else "poll"
+            if requested_delivery == "events" and record["delivery"] == "poll":
+                record["delivery_reason"] = "event delivery is only verified for Claude supervisors"
+            else:
+                record.pop("delivery_reason", None)
+        record.setdefault("delivery", "poll")
+        save(record)
+        if not running:
             command = supervisor_command(record, exists)
             # zsh resolves the user's existing claude/claude-bf functions.
             env = os.environ.copy()
@@ -166,7 +216,7 @@ def team_start(supervisor, name, brief, session_id=None):
     if not name.strip() or not brief.strip():
         raise ValueError("Provide a project name and brief")
     validate_brief(brief)
-    with locked(supervisor):
+    with delivery_locked(supervisor), locked(supervisor):
         record = read(supervisor)
         if record.get("deleting"):
             raise ValueError("Team is being deleted")
@@ -200,17 +250,20 @@ def write_handoff(record):
         temporary.replace(path)
 
 
-def team_checkpoint(supervisor, handoff, execution, brief=None, phase=None, plan_path=None, reviewer_backend=None):
+def team_checkpoint(supervisor, execution, handoff=None, brief=None, phase=None, plan_path=None, reviewer_backend=None):
     if execution not in ("planning", "authorized", "paused", "finished"):
         raise ValueError("Invalid execution state")
-    if not handoff.strip() or len(handoff) > 6000:
+    if handoff is not None and (not handoff.strip() or len(handoff) > 6000):
         raise ValueError("Provide a concise handoff (at most 6000 characters)")
     if brief is not None:
         validate_brief(brief)
-    with locked(supervisor):
+    with delivery_locked(supervisor), locked(supervisor):
         record = read(supervisor)
         if record.get("role") != "supervisor" or record.get("deleting"):
             raise ValueError("Select an available team")
+        handoff = handoff if handoff is not None else record.get("handoff")
+        if not handoff:
+            raise ValueError("Provide a handoff for the first checkpoint")
         next_phase = phase or record.get("phase", "planning")
         if next_phase not in ("planning", "execution", "review", "finished"):
             raise ValueError("Invalid workflow phase")
@@ -228,17 +281,17 @@ def team_checkpoint(supervisor, handoff, execution, brief=None, phase=None, plan
             if not any(row.get("kind") == "planner" and row.get("status") == "done" for row in workers):
                 raise ValueError("The planner must finish before execution")
         if next_phase in ("review", "finished"):
-            if any(row.get("kind") == "executor" and row.get("status") in
-                   ("starting", "working", "stopping", "needs supervisor", "blocked", "error", "interrupted") for row in workers):
-                raise ValueError("Resolve executor work before review")
+            unresolved = [row["name"] + " " + row["id"] for row in workers if row.get("kind") == "executor" and row.get("status") in
+                          ("starting", "working", "stopping", "needs supervisor", "blocked", "error", "interrupted")]
+            if unresolved:
+                raise ValueError("Resolve or worker_stop these executors before review: " + "; ".join(unresolved))
         if next_phase == "review" and not (reviewer_backend or record.get("reviewer_backend")):
             raise ValueError("Ask the user to choose the review backend before starting review")
         if next_phase == "finished" and not any(row.get("kind") == "reviewer" and row.get("status") == "done" for row in workers):
             raise ValueError("A reviewer must finish before declaring completion")
-        latest_execution = max((row.get("activity_at", row.get("updated", 0)) for row in workers
-                                if row.get("kind") == "executor"), default=0)
+        latest_execution = max((row.get("done_at", 0) for row in workers if row.get("kind") == "executor"), default=0)
         if next_phase == "finished" and not any(row.get("kind") == "reviewer" and row.get("status") == "done"
-                                                and row.get("activity_at", 0) >= latest_execution for row in workers):
+                                                and row.get("done_at", 0) >= latest_execution for row in workers):
             raise ValueError("Review the latest executor changes before declaring completion")
         if execution == "finished" and next_phase != "finished":
             raise ValueError("Finish the review phase before marking execution finished")
@@ -254,7 +307,7 @@ def team_checkpoint(supervisor, handoff, execution, brief=None, phase=None, plan
 
 def team_takeover(caller, team_id, session_id=None):
     team_id = str(uuid.UUID(team_id))
-    with locked(team_id):
+    with delivery_locked(team_id), locked(team_id):
         record = read(team_id)
         chat = read(caller)
         if session_id is None:
@@ -304,7 +357,7 @@ def alive(pid):
 def launch_worker(record, message):
     """Caller owns the per-worker lock; runner takes it before starting."""
     folder = directory(record["id"])
-    record.update(status="starting", message="", assignment=message, run_id=str(uuid.uuid4()))
+    record.update(status="starting", message="", assignment=message, run_id=str(uuid.uuid4()), last_error=None)
     (folder / "prompt.txt").write_text(message)
     save(record)
     log(record["id"], "Supervisor", message)
@@ -323,14 +376,14 @@ def launch_worker(record, message):
     return record
 
 
-def worker_start(supervisor, name, task, backend=None, cwd=None, kind="executor", model=None):
+def worker_start(supervisor, name, task, backend=None, cwd=None, kind="executor", model=None, mcp_config=None):
     with locked(supervisor):
         if read(supervisor).get("deleting"):
             raise ValueError("Team is being deleted")
-        return start_owned_worker(supervisor, name, task, backend, cwd, kind, model)
+        return start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_config)
 
 
-def start_owned_worker(supervisor, name, task, backend, cwd, kind, model):
+def start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_config):
     parent = read(supervisor)
     if parent["role"] != "supervisor":
         raise ValueError("Call team_start first")
@@ -343,6 +396,8 @@ def start_owned_worker(supervisor, name, task, backend, cwd, kind, model):
         raise ValueError("Provide a model name")
     if backend not in BACKENDS or not task.strip() or not name.strip():
         raise ValueError("Provide a supported backend, name, and nonempty task")
+    if mcp_config and not backend.startswith("claude"):
+        raise ValueError("mcp_config is for Claude workers; Codex workers use the servers in ~/.codex")
     workspace = Path(cwd or parent["cwd"]).resolve(strict=True)
     if not workspace.is_dir():
         raise ValueError("Workspace must be an existing directory")
@@ -350,14 +405,14 @@ def start_owned_worker(supervisor, name, task, backend, cwd, kind, model):
     record = {"id": agent_id, "parent": supervisor, "role": "worker", "name": name,
               "backend": backend, "kind": kind, "model": model,
               "cwd": str(workspace), "task": task, "created": time.time(),
-              "config_dir": parent.get("config_dir", "")}
+              "config_dir": parent.get("config_dir", ""), "mcp_config": mcp_config}
     with locked(agent_id):
         return launch_worker(record, task)
 
 
 def agent_send(supervisor, agent_id, message):
     owned(supervisor, agent_id)
-    with locked(supervisor):
+    with delivery_locked(supervisor), locked(supervisor):
         if read(supervisor).get("deleting"):
             raise ValueError("Team is being deleted")
         return send_owned_worker(supervisor, agent_id, message)
@@ -376,13 +431,13 @@ def send_owned_worker(supervisor, agent_id, message):
 
 
 def worker_stop(supervisor, agent_id):
-    with locked(agent_id):
+    with delivery_locked(supervisor), locked(agent_id):
         record = owned(supervisor, agent_id)
         if record["status"] in ("starting", "working", "stopping") and alive(record.get("pid")):
             # PID is held by our detached runner, which also reaps its backend child.
             os.kill(record["pid"], signal.SIGTERM)
             record["status"] = "stopping"
-        else:
+        elif record["status"] != "done":
             record["status"] = "stopped"
         save(record)
         return record
@@ -401,7 +456,7 @@ def snapshot():
 def manage_team(agent_id, action):
     record = read(agent_id)
     supervisor = record.get("team_id") or record.get("parent") or record["id"]
-    with locked(supervisor):
+    with delivery_locked(supervisor), locked(supervisor):
         parent = read(supervisor)
         if parent.get("role") not in ("supervisor", "chat"):
             raise ValueError("Select a team or chat")
@@ -442,27 +497,67 @@ def manage_team(agent_id, action):
 
 
 def worker_summary(row):
-    result = {key: row[key] for key in ("id", "name", "backend", "kind", "model", "cwd", "status", "run_id", "activity_at") if key in row}
+    result = {key: row[key] for key in ("id", "name", "backend", "kind", "model", "cwd", "status") if key in row}
     for key in ("assignment", "message", "last_report"):
         value = row.get(key, row.get("task", "") if key == "assignment" else "")
         if value:
             result[key] = value[:1200] + ("… [see details]" if len(value) > 1200 else "")
     if result.get("last_report") == result.get("message"):
         result.pop("last_report", None)
+    if row.get("last_error"):
+        result["last_error"] = row["last_error"]
+    if row.get("delivery_receipt"):
+        result["delivery_receipt"] = row["delivery_receipt"]
     result["details"] = str(directory(row["id"]) / "activity.jsonl")
     result["transcript"] = str(directory(row["id"]) / "chat.md")
     return result
+
+
+def worker_version(row):
+    """Internal inbox identity; full text stays out of the compact response."""
+    fields = ("run_id", "status", "assignment", "message", "last_report", "last_error")
+    payload = json.dumps([row.get(key) for key in fields], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def changed_fields(row, before):
+    """A worker the inbox already reported: identity, status, and only what moved.
+    The supervisor wrote the assignment and already read the last report."""
+    keep = {"id", "name", "status"}
+    if row.get("message", "").endswith("[see details]"):
+        keep.add("details")
+    return {key: value for key, value in row.items()
+            if key in keep or (key != "last_report" and before.get(key) != value)}
+
+
+def delivery_capability(parent):
+    try:
+        owner = read(parent.get("owner", parent["id"]))
+        if owner.get("delivery") != "events" or not owner.get("backend", "").startswith("claude"):
+            return {"delivery": "poll", "delivery_reason": owner.get("delivery_reason", "current owner uses polling")}
+        endpoint = json.loads((directory(owner["id"]) / "delivery-endpoint.json").read_text())
+        if endpoint.get("session_id") != owner.get("session_id"):
+            return {"delivery": "poll", "delivery_reason": "Claude event endpoint is stale"}
+        return {"delivery": "events", "delivery_session": owner["session_id"]}
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return {"delivery": "poll", "delivery_reason": "Claude event endpoint is unavailable; use team_status"}
 
 
 def team_status(supervisor, wait_seconds=0, full=False, inbox=None):
     timeout = min(30, max(0, wait_seconds))
     deadline = time.monotonic() + timeout
     while True:
-        rows = [worker_summary(row) for row in snapshot() if row.get("parent") == supervisor]
+        worker_records = [row for row in snapshot() if row.get("parent") == supervisor]
+        rows = [worker_summary(row) for row in worker_records]
         parent = read(supervisor)
         summary = {key: parent[key] for key in
-                   ("id", "name", "backend", "status", "owner", "execution", "phase", "plan_path", "reviewer_backend", "checkpoint_at") if key in parent}
-        current = {"supervisor": summary, "workers": {row["id"]: row for row in rows}}
+                   ("id", "name", "backend", "status", "owner", "execution", "phase", "plan_path", "reviewer_backend",
+                    "checkpoint_at") if key in parent}
+        summary.update(delivery_capability(parent))
+        # checkpoint_at moves on the supervisor's own checkpoints; that is not news to it.
+        current = {"supervisor": {key: value for key, value in summary.items() if key != "checkpoint_at"},
+                   "workers": {row["id"]: row for row in rows},
+                   "versions": {row["id"]: worker_version(row) for row in worker_records}}
         previous = inbox.get(supervisor) if inbox is not None and not full else None
         if current != previous or not any(row["status"] in ("working", "starting", "stopping") for row in rows):
             break
@@ -471,9 +566,18 @@ def team_status(supervisor, wait_seconds=0, full=False, inbox=None):
         time.sleep(0.2)
     if inbox is not None:
         inbox[supervisor] = current
-    result = {"workers": [row for row in rows if previous is None or previous["workers"].get(row["id"]) != row],
-              "active": sum(row["status"] in ("starting", "working", "stopping") for row in rows)}
-    if previous is None or previous["supervisor"] != summary:
+    changed = []
+    for row in rows:
+        before = previous["workers"].get(row["id"]) if previous is not None else None
+        version_changed = previous is not None and previous.get("versions", {}).get(row["id"]) != current["versions"][row["id"]]
+        if before != row or version_changed:
+            update = row if before is None else changed_fields(row, before)
+            if before == row:
+                record = next(item for item in worker_records if item["id"] == row["id"])
+                update.update(run_id=record.get("run_id"), report_changed=True, details=row["details"])
+            changed.append(update)
+    result = {"workers": changed, "active": sum(row["status"] in ("starting", "working", "stopping") for row in rows)}
+    if previous is None or previous["supervisor"] != current["supervisor"]:
         result["supervisor"] = summary
     if previous is not None:
         removed = sorted(previous["workers"].keys() - current["workers"].keys())
@@ -486,7 +590,7 @@ def worker_command(record, output):
     backend = record["backend"]
     session = record.get("session_id")
     if backend == "codex-bf":
-        args = [backend, "exec", "-c", 'sandbox_mode="workspace-write"',
+        args = [backend, "exec", "--skip-git-repo-check", "-c", 'sandbox_mode="workspace-write"',
                 "-c", 'approval_policy="on-request"', "-c", 'approvals_reviewer="auto_review"',
                 "-c", 'model_provider="bifrost"', "-c", 'model_reasoning_effort="medium"']
         if session:
@@ -502,6 +606,8 @@ def worker_command(record, output):
             args += ["--resume", session]
         if record.get("model"):
             args += ["--model", record["model"]]
+        if record.get("mcp_config"):
+            args += ["--mcp-config", record["mcp_config"]]
     return ["zsh", "-c", shlex.join(args)]
 
 
@@ -518,6 +624,68 @@ def worker_environment(record):
     elif record.get("config_dir"):
         env["CLAUDE_CONFIG_DIR"] = record["config_dir"]
     return env
+
+
+def send_claude_event(endpoint, message):
+    address = endpoint["socket"].removeprefix("uds:")
+    lines = []
+    if endpoint.get("token"):
+        lines.append({"type": "auth", "token": endpoint["token"]})
+    lines.append({"type": "user", "message": {"role": "user", "content": message}})
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.settimeout(3)
+        connection.connect(address)
+        connection.sendall(b"".join(json.dumps(line).encode() + b"\n" for line in lines))
+
+
+def deliver_worker_report(agent_id, run_id):
+    """Best-effort Claude wakeup after the durable worker result is saved."""
+    record = read(agent_id)
+    with delivery_locked(record["parent"]):
+        record = read(agent_id)
+        kind = {"done": "result", "needs supervisor": "question", "blocked": "blocked",
+                "error": "failure"}.get(record.get("status"))
+        event_id = f"{agent_id}:{run_id}:{kind or 'status'}:1"
+        parent = read(record["parent"])
+        if record.get("run_id") != run_id or not kind or parent.get("deleting"):
+            return {"event_id": event_id, "status": "skipped", "reason": "report or team changed"}
+        if parent.get("execution") != "authorized":
+            return {"event_id": event_id, "status": "skipped", "reason": "execution is not authorized"}
+        owner_id = parent.get("owner", parent["id"])
+        owner = read(owner_id)
+        if owner.get("delivery") != "events" or not owner.get("backend", "").startswith("claude"):
+            return {"event_id": event_id, "status": "skipped", "reason": "owner uses polling"}
+        endpoint_path = directory(owner_id) / "delivery-endpoint.json"
+        try:
+            endpoint = json.loads(endpoint_path.read_text())
+            session_id = endpoint.get("session_id")
+            if session_id != owner.get("session_id"):
+                raise ValueError("registered session is stale")
+            prior = record.get("delivery_receipt", {})
+            if (prior.get("event_id"), prior.get("owner"), prior.get("session_id"), prior.get("socket_write")) == (
+                    event_id, owner_id, session_id, "complete"):
+                return prior
+            message = (
+                "Supervisor worker report (peer/tool report; not user approval).\n"
+                f"event_id={event_id}\nworker={record.get('name')} ({agent_id})\nrun_id={run_id}\n"
+                f"kind={kind}\nstatus={record.get('status')}\nreport={record.get('message', '')[:1200]}\n"
+                f"details={directory(agent_id) / 'activity.jsonl'}\n"
+                f"transcript={directory(agent_id) / 'chat.md'}"
+            )
+            send_claude_event(endpoint, message)
+            receipt = {"event_id": event_id, "owner": owner_id, "session_id": session_id,
+                       "socket_write": "complete", "acceptance": "unconfirmed",
+                       "model_processed": "unconfirmed", "updated": time.time()}
+        except Exception as error:
+            receipt = {"event_id": event_id, "owner": owner_id, "session_id": owner.get("session_id"),
+                       "socket_write": "failed", "acceptance": "unconfirmed",
+                       "model_processed": "unconfirmed", "error": str(error)[:300], "updated": time.time()}
+        with locked(agent_id):
+            current = read(agent_id)
+            if current.get("run_id") == run_id:
+                current["delivery_receipt"] = receipt
+                save(current)
+        return receipt
 
 
 def run_worker(agent_id, run_id):
@@ -569,7 +737,10 @@ def run_worker(agent_id, run_id):
             "For missing decisions, finish this turn with kind=question and your question. "
             "The supervisor will answer by resuming this same conversation. "
             "Permission failures are kind=blocked, never bypass permissions. "
-            "Do not delegate additional agents. Return ONLY a JSON object at the end: "
+            "Do not delegate additional agents. You get one turn: an interim message ends it, so write artifacts "
+            "incrementally with tools (one file per step, never a whole plan in one reply) and report once at the end. "
+            "Compute counts and diffs with commands, not by hand. After creating or editing anything in an external "
+            "system, re-fetch it and verify the result. Return ONLY a JSON object at the end: "
             '{"kind":"result|question|blocked","message":"your report or question"}.\n\n'
             "Keep the report concise: outcome, changed file paths, validation, blockers, next action. "
             "Save detailed findings in the workspace and return their paths instead of long logs or diffs.\n\n"
@@ -602,6 +773,17 @@ def run_worker(agent_id, run_id):
                             current = read(agent_id)
                             current["session_id"] = session
                             save(current)
+                    error = None
+                    if event.get("type") == "error":
+                        error = str(event.get("message", ""))[:300]
+                    elif event.get("subtype") == "api_retry":
+                        error = f"API retry {event.get('attempt')}/{event.get('max_retries')}: {event.get('error')}"
+                    if error and error != record.get("last_error"):
+                        record["last_error"] = error
+                        with locked(agent_id):
+                            current = read(agent_id)
+                            current["last_error"] = error
+                            save(current)
                     item = event.get("item", {})
                     if event.get("type") == "item.completed":
                         if item.get("type") == "agent_message":
@@ -620,7 +802,8 @@ def run_worker(agent_id, run_id):
         if stopped:
             state, message = "stopped", "Stopped by supervisor"
         elif code:
-            state, message = "error", f"Backend exited with code {code}. See backend.log."
+            tail = [line for line in (folder / "backend.log").read_text().splitlines() if line.strip()][-3:]
+            state, message = "error", f"Backend exited with code {code}. " + (" | ".join(tail)[-600:] or "backend.log is empty.")
         else:
             if output.exists():
                 final = json.loads(output.read_text())
@@ -635,6 +818,8 @@ def run_worker(agent_id, run_id):
             current = read(agent_id)
             current.update(status=state, message=message, pid=None)
             save(current)
+        with contextlib.suppress(Exception):
+            deliver_worker_report(agent_id, run_id)
     except Exception as error:
         if process and process.poll() is None:
             os.killpg(process.pid, signal.SIGTERM)
@@ -648,6 +833,9 @@ def run_worker(agent_id, run_id):
             current.update(status="stopped" if stopped else "error", message=str(error), pid=None)
             save(current)
         log(agent_id, "Runner", str(error))
+        if not stopped:
+            with contextlib.suppress(Exception):
+                deliver_worker_report(agent_id, run_id)
 
 
 def tool(name, description, properties, required):
@@ -661,18 +849,18 @@ TOOLS = [
          {"name": STRING, "brief": STRING, "session_id": STRING, "owner_token": STRING}, ["name", "brief"]),
     tool("team_takeover", "Explicitly transfer a stable team to THIS conversation after a reset or in a new chat. Preserves workers and execution state. Returns goal, handoff, worker summaries and a new owner_token; invalidates the old token.",
          {"team_id": STRING, "session_id": STRING}, ["team_id"]),
-    tool("team_checkpoint", "Save a concise current handoff and execution authorization state. Update after decisions, assignments, results and blockers, and before ending a turn. Optional brief replaces the 1–3 paragraph goal.",
+    tool("team_checkpoint", "Save execution authorization state and phase, with a concise current handoff. Update after decisions, authorization, blockers, or next actions change, and before ending a turn. Omit handoff to keep the saved one; optional brief replaces the 1–3 paragraph goal.",
          {"handoff": STRING, "execution": {"type": "string", "enum": ["planning", "authorized", "paused", "finished"]},
           "brief": STRING, "phase": {"type": "string", "enum": ["planning", "execution", "review", "finished"]},
           "plan_path": STRING, "reviewer_backend": {"type": "string", "enum": ["claude", "codex-bf"]},
-          "owner_token": STRING}, ["handoff", "execution", "owner_token"]),
-    tool("worker_start", "Start a planner (Claude subscription/Opus), executor (Bifrost GPT/" + EXECUTION_MODEL + "), or reviewer (user-chosen backend). Match the saved phase. Use separate existing worktrees for concurrent writers. Optional model overrides the role default.",
+          "owner_token": STRING}, ["execution", "owner_token"]),
+    tool("worker_start", "Start the worker for the saved phase: planning=planner (claude, Opus), execution=executor (codex-bf, " + EXECUTION_MODEL + "), review=reviewer (the checkpointed reviewer_backend). Any existing directory works as cwd; use separate worktrees for concurrent writers. Optional model overrides the role default; optional mcp_config (file path or JSON) adds MCP servers to a Claude worker.",
          {"name": STRING, "task": STRING, "backend": {"type": "string", "enum": list(BACKENDS)},
           "kind": {"type": "string", "enum": ["planner", "executor", "reviewer"]}, "model": STRING,
-          "cwd": STRING, "owner_token": STRING}, ["name", "task", "kind", "owner_token"]),
+          "cwd": STRING, "mcp_config": STRING, "owner_token": STRING}, ["name", "task", "kind", "owner_token"]),
     tool("agent_send", "Answer or revise a worker by resuming its SAME session. Only between turns.",
          {"agent_id": STRING, "message": STRING, "owner_token": STRING}, ["agent_id", "message", "owner_token"]),
-    tool("team_status", "Inbox: first read returns all workers, later reads only changed summaries. Empty workers means no changes, not no workers; active counts running workers. Wait up to 30 seconds. Use full=true to recover all summaries. Detailed reports remain at the returned paths.",
+    tool("team_status", "Inbox: first read returns all workers; later reads return only workers that changed, and only their id, name, status, and changed fields. Empty workers means no changes, not no workers; active counts running workers. Wait up to 30 seconds. Use full=true to recover all summaries. Detailed reports remain at the paths given on first sight.",
          {"wait_seconds": {"type": "integer", "minimum": 0, "maximum": 30}, "full": {"type": "boolean"}}, []),
     tool("worker_stop", "Stop one of this supervisor's workers; preserve its conversation and files.",
          {"agent_id": STRING, "owner_token": STRING}, ["agent_id", "owner_token"]),
@@ -722,7 +910,11 @@ def dispatch(caller, name, arguments, inbox=None):
             if session is not None and session != chat.get("session_id"):
                 raise ValueError("Session changed; use explicit team_takeover")
         if name != "team_status":
-            return functions[name](team_id, **args)
+            result = functions[name](team_id, **args)
+            if name in ("worker_start", "agent_send", "worker_stop"):
+                result = worker_summary(result)
+                result.pop("assignment", None)
+            return result
     return team_status(team_id, inbox=inbox, **args)
 
 
@@ -751,12 +943,16 @@ def mcp(supervisor):
             elif method == "tools/list":
                 result = {"tools": TOOLS}
             elif method == "tools/call":
+                params = request.get("params", {})
+                started = time.monotonic()
                 try:
-                    params = request["params"]
                     result = dispatch(supervisor, params["name"], params.get("arguments", {}), inbox=inbox)
                     result = {"content": [{"type": "text", "text": json.dumps(result)}]}
                 except Exception as error:
                     result = {"isError": True, "content": [{"type": "text", "text": str(error)}]}
+                with (directory(supervisor) / "mcp.log").open("a") as calls:
+                    calls.write(f"{time.time():.0f} {params.get('name')} {time.monotonic() - started:.1f}s"
+                                + (" error\n" if result.get("isError") else "\n"))
             else:
                 print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method not found"}}), flush=True)
                 continue

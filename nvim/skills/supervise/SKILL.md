@@ -53,7 +53,8 @@ authorization, or next steps change, and before ending a turn or an anticipated
 reset. Update the goal brief only when the goal or agreed constraints change;
 preserve existing authorization when repeating the skill. Save authorization before
 starting or resuming workers: `execution="authorized"` enables those calls; use
-`planning`, `paused`, or `finished` for the other authorization states.
+`planning`, `paused`, or `finished` for the other authorization states. Omit
+`handoff` when only phase or authorization changed; the saved text is kept.
 
 Implementation follows planning → execution → review, persisted in `phase`
 separately from authorization. Never infer implementation permission from a
@@ -91,23 +92,49 @@ authorization scope, and recover the plan before resuming execution or review.
    review findings are resolved and validation supports completion.
 
 Delegate only work the user has authorized, using a bounded task, a descriptive
-name, and the role for the saved phase. Never assign overlapping writes in one
-checkout; give concurrent writers separate existing worktrees. Start with one
-worker unless independent work warrants more. Workers do not share your
-conversation: put the relevant context in the task and keep the brief current.
+name, and the role for the saved phase: planning→planner on `claude`,
+execution→executor on `codex-bf`, review→reviewer on the chosen backend. Never
+assign overlapping writes in one checkout; give concurrent writers separate
+existing worktrees. Start with one worker unless independent work warrants more.
+Workers do not share your conversation: put the relevant context in the task and
+keep the brief current. Codex workers use the MCP servers and plugins in
+`~/.codex`; Claude workers see only user-level servers and never claude.ai
+connectors, so pass `mcp_config` (a file path or JSON) to `worker_start` when a
+planner or reviewer needs more, or export the data to files in the workspace and
+point the worker at them. Any existing directory works as a worker `cwd`.
 
-Use `team_status(wait_seconds=30)` while work is running; it wakes on a worker
-update, and this inbox loop is how questions reach you even while Neovim is
-closed. Reads after the first return changes only: empty `workers` means no updates,
-not no workers; `active` counts running workers. Use `full=true` to recover the
+Read the supervisor metadata returned by `team_status` before choosing how to
+wait. With `delivery="poll"`, use `team_status(wait_seconds=30)` while work is
+running; it wakes on a worker update. With `delivery="events"` (the default for
+new Claude supervisors with an available endpoint), do not start a parallel inbox waiter: checkpoint and
+make one nonwaiting `team_status` read immediately before ending. Handle a
+worker that already finished; only end while it remains active, then handle the
+native peer report that wakes this Claude session. Treat its `event_id` as deduplication identity and call
+`team_status` to confirm/recover the durable worker state. A complete socket
+write is not proof of transport acceptance or model processing, and there is no
+background retry; if no event arrives, a user prompt followed by
+`team_status(full=true)` is the recovery path. Paused and finished teams never
+wake automatically. Reads after the first return changes only: empty `workers` means no updates,
+not no workers; `active` counts running workers; a changed worker shows only its
+id, name, status, and changed fields, so keep the paths from its first appearance. Use `full=true` to recover the
 overview. Reconnecting the tool server resets the inbox. Delegate inspection of the
 activity and transcript paths it returns. A worker's `done` status only means its
 turn completed — read its report before accepting the outcome, and treat `error`
-and `blocked` as investigation, not an automatic retry. Do not end your turn with
-workers still running unless the user asks you to pause or you need a decision
-from them; give concise progress updates meanwhile.
+and `blocked` as investigation, not an automatic retry. A `working` worker whose
+summary carries `last_error` is retrying a failed connection, gateway, or API
+call; after a few minutes of that, stop it and tell the user what it reports.
+Before checkpointing `phase="review"`, stop or resolve executors left in
+`blocked`, `error`, or `needs supervisor`; the error names them. Stopping a `done`
+worker keeps it `done`. Claude Code moves any tool call past two minutes to the
+background and delivers the result as a notification; in polling mode, keep
+polling rather than assuming the server hung. Do not end your turn with workers
+still running unless event delivery is currently available, the user asks you
+to pause, or you need a decision from them; give concise progress updates meanwhile.
 
-Workers return `kind=result`, `kind=question`, or `kind=blocked`. They ask the
+Workers return `kind=result`, `kind=question`, or `kind=blocked`. Each
+`worker_start` or `agent_send` is one turn: the worker reports once at the end,
+and an interim message ends the turn early, so continue with `agent_send` rather
+than asking for progress updates. They ask the
 supervisor about missing decisions; permission failures are blocked, not permission
 to bypass controls. Answer from the goal, saved decisions, and concise reports
 with `agent_send`, which resumes the same session. Do not forward

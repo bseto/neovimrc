@@ -12,6 +12,7 @@ import threading
 import time
 import tomllib
 import uuid
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("team", Path(__file__).with_name("agent-team.py"))
@@ -46,7 +47,12 @@ if "STOP_TEST" in prompt:
 if "INVALID_TEST" in prompt:
     print('{"type":"thread.started","thread_id":"test-session"}', flush=True)
     sys.exit(0)
+if "EXIT_TEST" in prompt:
+    print("fatal: no credentials", file=sys.stderr)
+    sys.exit(1)
 resumed = "resume" in args or "--resume" in args
+if resumed:
+    print('{"type":"error","message":"Reconnecting... waiting for network"}', flush=True)
 if resumed:
     assert args[args.index("resume" if "resume" in args else "--resume") + 1] == "test-session"
 result = {"kind": "result" if resumed else "question", "message": "Done with blue" if resumed else "Which color?"}
@@ -72,6 +78,7 @@ else:
     team.agent_send(supervisor, worker["id"], "Use blue.")
     result = wait(worker["id"])
     assert result["status"] == "done" and result["message"] == "Done with blue", result
+    assert question.get("last_error") is None and result["last_error"] == "Reconnecting... waiting for network"
     transcript = (team.directory(worker["id"]) / "chat.md").read_text()
     assert "Which color?" in transcript and "Use blue." in transcript and "Done with blue" in transcript
     activity = [json.loads(line) for line in (team.directory(worker["id"]) / "activity.jsonl").read_text().splitlines()]
@@ -86,6 +93,13 @@ else:
     # Incidental record writes should not consume supervisor context.
     team.save(team.read(worker["id"]))
     assert team.team_status(supervisor, inbox=inbox)["workers"] == []
+    # A distinct run remains visible even when its compact result is identical.
+    repeated = team.read(worker["id"])
+    repeated["run_id"] = str(uuid.uuid4())
+    team.save(repeated)
+    invisible = team.team_status(supervisor, inbox=inbox)["workers"][0]
+    assert invisible["report_changed"] and invisible["run_id"] == repeated["run_id"]
+    assert team.team_status(supervisor, inbox=inbox)["workers"] == []
     detailed = team.read(worker["id"])
     detailed["message"] = "Evidence " * 1000
     team.save(detailed)
@@ -94,17 +108,25 @@ else:
     assert len(update["workers"][0]["message"]) < 1300
     assert detailed["message"] in Path(update["workers"][0]["details"]).read_text()
     assert team.team_status(supervisor, inbox=inbox)["workers"] == []
+    # Full report changes beyond the display cutoff still advance the inbox.
+    detailed = team.read(worker["id"])
+    detailed["message"] = detailed["message"][:-1] + "X"
+    team.save(detailed)
+    cutoff = team.team_status(supervisor, inbox=inbox)["workers"][0]
+    assert cutoff["report_changed"] and cutoff["run_id"] == detailed["run_id"]
+    assert team.team_status(supervisor, inbox=inbox)["workers"] == []
     assert len(team.team_status(supervisor, full=True, inbox=inbox)["workers"]) == 1
     # A follow-up clears the live message but preserves the last result for takeover.
     detailed.update(status="starting", message="", assignment="Review evidence")
     team.save(detailed)
-    assert team.read(worker["id"])["last_report"] == "Evidence " * 1000
+    assert team.read(worker["id"])["last_report"] == detailed["last_report"]
     detailed.update(status="working", pid=os.getpid())
     team.save(detailed)
     assert team.team_status(supervisor, wait_seconds=30, inbox=inbox)["active"] == 1
     started = time.monotonic()
     assert team.team_status(supervisor, wait_seconds=0.2, inbox=inbox) == {"workers": [], "active": 1}
     assert time.monotonic() - started >= 0.2
+    assert time.monotonic() - started < 1, "team_status overran wait_seconds"
     def finish_during_poll():
         with team.locked(worker["id"]):
             finished = team.read(worker["id"])
@@ -115,9 +137,81 @@ else:
     woke = team.team_status(supervisor, wait_seconds=5, inbox=inbox)
     update_timer.join()
     assert woke["workers"][0]["message"] == "Arrived during wait" and woke["active"] == 0
+    # Repeat rows carry identity, status, and changed fields only; no assignment or path echoes.
+    assert set(woke["workers"][0]) == {"id", "name", "status", "message"}, woke
     # Each connection has an independent first read; takeover resets its inbox.
     assert team.team_status(supervisor, inbox={})["workers"]
     team.save(result)
+    # Opt-in Claude delivery uses the current owner/session, never changes work status,
+    # and suppresses a repeat after a complete socket write.
+    parent_before = team.read(supervisor)
+    parent = dict(parent_before)
+    parent.update(delivery="events", execution="authorized", owner=supervisor, session_id=supervisor)
+    team.save(parent)
+    endpoint = team.directory(supervisor) / "delivery-endpoint.json"
+    endpoint.write_text(json.dumps({"session_id": supervisor, "socket": "fake", "token": "private-token"}))
+    endpoint.chmod(0o600)
+    assert team.team_status(supervisor)["supervisor"]["delivery"] == "events"
+    sent = []
+    real_sender = team.send_claude_event
+    team.send_claude_event = lambda registered, message: sent.append((registered, message))
+    delivered = team.read(worker["id"])
+    delivered.update(run_id=str(uuid.uuid4()), status="done", message="Event result", pid=None)
+    team.save(delivered)
+    receipt = team.deliver_worker_report(worker["id"], delivered["run_id"])
+    assert receipt["socket_write"] == "complete" and receipt["acceptance"] == "unconfirmed"
+    assert receipt["event_id"] in sent[0][1] and sent[0][0]["token"] == "private-token"
+    assert team.read(worker["id"])["status"] == "done"
+    assert team.deliver_worker_report(worker["id"], delivered["run_id"])["socket_write"] == "complete"
+    assert len(sent) == 1
+    assert "private-token" not in json.dumps(team.snapshot())
+    # An ambiguous transport failure retains the same event identity for retry.
+    delivered = team.read(worker["id"])
+    delivered.update(run_id=str(uuid.uuid4()), status="done", message="Retry result")
+    team.save(delivered)
+    team.send_claude_event = lambda *_: (_ for _ in ()).throw(OSError("ambiguous local failure"))
+    failed = team.deliver_worker_report(worker["id"], delivered["run_id"])
+    retried = team.deliver_worker_report(worker["id"], delivered["run_id"])
+    assert failed["socket_write"] == "failed" and failed["event_id"] == retried["event_id"]
+    assert team.read(worker["id"])["status"] == "done"
+    # Pausing prevents wakeup; takeover and reset route only to the new session endpoint.
+    parent = team.read(supervisor)
+    parent["execution"] = "paused"
+    team.save(parent)
+    delivered = team.read(worker["id"])
+    delivered["run_id"] = str(uuid.uuid4())
+    team.save(delivered)
+    assert team.deliver_worker_report(worker["id"], delivered["run_id"])["status"] == "skipped"
+    owner2, session2 = str(uuid.uuid4()), str(uuid.uuid4())
+    team.save({"id": owner2, "role": "chat", "backend": "claude", "delivery": "events",
+               "session_id": session2, "cwd": str(root), "created": time.time()})
+    parent = team.read(supervisor)
+    parent.update(execution="authorized", owner=owner2)
+    team.save(parent)
+    endpoint2 = team.directory(owner2) / "delivery-endpoint.json"
+    endpoint2.write_text(json.dumps({"session_id": session2, "socket": "fake2"}))
+    endpoint2.chmod(0o600)
+    team.send_claude_event = lambda registered, message: sent.append((registered, message))
+    delivered = team.read(worker["id"])
+    delivered["run_id"] = str(uuid.uuid4())
+    team.save(delivered)
+    routed = team.deliver_worker_report(worker["id"], delivered["run_id"])
+    assert routed["owner"] == owner2 and routed["session_id"] == session2 and sent[-1][0]["socket"] == "fake2"
+    reset_session = str(uuid.uuid4())
+    owner_record = team.read(owner2)
+    owner_record["session_id"] = reset_session
+    team.save(owner_record)
+    assert team.team_status(supervisor)["supervisor"]["delivery"] == "poll"
+    delivered = team.read(worker["id"])
+    delivered["run_id"] = str(uuid.uuid4())
+    team.save(delivered)
+    assert "stale" in team.deliver_worker_report(worker["id"], delivered["run_id"])["error"]
+    endpoint.unlink(missing_ok=True)
+    team.send_claude_event = real_sender
+    team.save(parent_before)
+    for path in team.directory(owner2).iterdir():
+        path.unlink()
+    team.directory(owner2).rmdir()
     try:
         team.agent_send(str(uuid.uuid4()), worker["id"], "Unauthorized")
         raise AssertionError("Foreign supervisor accepted")
@@ -130,6 +224,8 @@ else:
         pass
     invalid = team.worker_start(supervisor, "Invalid", "INVALID_TEST", "codex-bf")
     assert wait(invalid["id"])["status"] == "error"
+    exited = wait(team.worker_start(supervisor, "Exit", "EXIT_TEST", "codex-bf")["id"])
+    assert exited["status"] == "error" and "no credentials" in exited["message"], exited
     stopping = team.worker_start(supervisor, "Stop", "STOP_TEST", "codex-bf")
     time.sleep(0.3)
     try:
@@ -155,7 +251,7 @@ else:
     assert quiet == {"workers": [], "active": 0}
     # A new reader process sees the same team after all launch callers exit.
     restored = subprocess.run([sys.executable, str(team.SCRIPT), "snapshot"], text=True, capture_output=True, check=True)
-    assert len(json.loads(restored.stdout)) == 4
+    assert len(json.loads(restored.stdout)) == 5
     codex_id, session_id = str(uuid.uuid4()), str(uuid.uuid4())
     codex = {"id": codex_id, "role": "chat", "backend": "codex-bf", "cwd": str(root), "created": time.time()}
     team.save(codex)
@@ -221,6 +317,8 @@ else:
     planner = team.dispatch(supervisor, "worker_start", {
         "kind": "planner", "name": "Plan color", "task": "Research color and ask about missing decisions.", "owner_token": token})
     assert planner["backend"] == "claude" and planner["model"] == "opus"
+    assert "task" not in planner and "assignment" not in planner, "mutations must return summaries"
+    assert "--mcp-config" in shlex.split(team.worker_command({**planner, "mcp_config": "{}"}, root / "out.json")[2])
     planner_args = shlex.split(team.worker_command(planner, root / "out.json")[2])
     assert planner_args[0] == "claude" and planner_args[planner_args.index("--model") + 1] == "opus"
     inherited = {"ANTHROPIC_AUTH_TOKEN": "fake", "ANTHROPIC_BASE_URL": "https://invalid.example",
@@ -245,14 +343,16 @@ else:
         "phase": "execution", "plan_path": str(plan), "owner_token": token})
     checkpoint_at = team.read(supervisor)["checkpoint_at"]
     rejected(supervisor, "worker_start", {"kind": "executor", "backend": "claude", "name": "Wrong executor", "task": "Work", "owner_token": token})
+    rejected(supervisor, "worker_start", {"kind": "executor", "name": "Codex servers", "task": "Work", "mcp_config": "{}", "owner_token": token})
     active_worker = team.dispatch(supervisor, "worker_start", {
         "kind": "executor", "name": "Running during takeover", "task": "STOP_TEST", "owner_token": token})
     assert active_worker["backend"] == "codex-bf" and active_worker["model"] == team.EXECUTION_MODEL
     executor_args = shlex.split(team.worker_command(active_worker, root / "out.json")[2])
     assert executor_args[executor_args.index("--model") + 1] == team.EXECUTION_MODEL
+    assert "--skip-git-repo-check" in executor_args
     assert 'model_provider="bifrost"' in executor_args
     resumed_args = shlex.split(team.worker_command({**active_worker, "session_id": "test-session"}, root / "out.json")[2])
-    assert "--model" in resumed_args and "resume" in resumed_args
+    assert "--model" in resumed_args and "resume" in resumed_args and "--output-schema" in resumed_args
     time.sleep(0.3)
     successor, new_session = str(uuid.uuid4()), str(uuid.uuid4())
     team.save({"id": successor, "role": "chat", "backend": "codex-bf", "cwd": str(root), "created": time.time()})
@@ -270,8 +370,7 @@ else:
     rejected(supervisor, "worker_stop", {"agent_id": worker["id"], "owner_token": token})
     rejected(supervisor, "team_start", {"name": "Old", "brief": "Overwrite", "owner_token": token})
     successor_token = transfer["owner_token"]
-    assert team.read(active_worker["id"])["pid"] == active_worker["pid"]
-    assert team.alive(active_worker["pid"])
+    assert team.alive(team.read(active_worker["id"])["pid"])
     team.dispatch(successor, "worker_stop", {"agent_id": active_worker["id"], "owner_token": successor_token})
     assert wait(active_worker["id"])["status"] == "stopped"
     team.dispatch(successor, "agent_send", {"agent_id": worker["id"], "message": "Review blue.", "owner_token": successor_token})
@@ -290,7 +389,7 @@ else:
     assert (team.directory(supervisor) / "handoff.md").read_text().strip() == paused["handoff"]
     rejected(successor, "team_checkpoint", {"handoff": "Too long brief", "execution": "planning", "brief": "a\n\nb\n\nc\n\nd", "owner_token": paused["owner_token"]})
     # Resolve older deliberately failed fixture workers before entering review.
-    for agent in (invalid,):
+    for agent in (invalid, exited):
         team.worker_stop(supervisor, agent["id"])
     rejected(successor, "team_checkpoint", {"handoff": "Review", "execution": "authorized", "phase": "review", "owner_token": paused["owner_token"]})
     team.dispatch(successor, "team_checkpoint", {"handoff": "User chose Claude subscription review.", "execution": "authorized",
@@ -301,7 +400,11 @@ else:
     rejected(successor, "team_checkpoint", {"handoff": "Done", "execution": "finished", "phase": "finished", "owner_token": paused["owner_token"]})
     team.dispatch(successor, "agent_send", {"agent_id": reviewer["id"], "message": "The agreed color is blue.", "owner_token": paused["owner_token"]})
     assert wait(reviewer["id"])["status"] == "done"
-    team.dispatch(successor, "team_checkpoint", {"handoff": "Reviewed; no findings.", "execution": "finished", "phase": "finished", "owner_token": paused["owner_token"]})
+    # Stopping finished workers keeps them done, so tidying cannot lock out completion.
+    team.dispatch(successor, "worker_stop", {"agent_id": reviewer["id"], "owner_token": paused["owner_token"]})
+    assert team.read(reviewer["id"])["status"] == "done"
+    team.dispatch(successor, "team_checkpoint", {"execution": "finished", "phase": "finished", "owner_token": paused["owner_token"]})
+    assert team.read(supervisor)["handoff"] == "User chose Claude subscription review."
     # A reset in the original terminal works without relinking worker parents.
     same_chat = team.dispatch(codex_id, "team_takeover", {"team_id": codex_id, "session_id": str(uuid.uuid4())})
     assert same_chat["supervisor"]["id"] == codex_id
@@ -329,4 +432,23 @@ else:
     assert team.directory(codex_id).exists()
     assert project_file.read_text() == "Project files survive"
     team.tmux = original_tmux
+    # Launch defaults follow the client, explicit polling wins, and reattach
+    # preserves the mode of the already-running process. No real tmux/model calls.
+    with patch.dict(os.environ):
+        os.environ.pop("NVIM_TEAM_DELIVERY", None)
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1)), \
+                patch.object(team.os, "execvp"):
+            for backend, expected in (("claude", "events"), ("claude-bf", "events"), ("codex-bf", "poll")):
+                chat_id = str(uuid.uuid4())
+                team.launch(backend, chat_id)
+                assert team.read(chat_id)["delivery"] == expected
+            os.environ["NVIM_TEAM_DELIVERY"] = "poll"
+            chat_id = str(uuid.uuid4())
+            team.launch("claude", chat_id)
+            assert team.read(chat_id)["delivery"] == "poll"
+        os.environ.pop("NVIM_TEAM_DELIVERY")
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0)), \
+                patch.object(team.os, "execvp"):
+            team.launch("claude", chat_id)
+            assert team.read(chat_id)["delivery"] == "poll"
 print("Team question/resume, ownership, stop, malformed output, MCP, and persistence checks passed")
