@@ -161,10 +161,16 @@ provenance banner. The idle trial replied `IDLE_PROBE_OK` after four seconds. In
 the busy trial, the current turn completed its harmless `sleep 5` tool and
 replied `BUSY_BASE_DONE`, then the queued peer event started a new turn and
 replied `BUSY_EVENT_OK`. Existing inbound controls were not changed.
+**Superseded for the busy case by the 2026-09-14 review below:** in a real
+supervisor turn the client absorbed the message into the running turn instead
+of queueing a new one, so busy delivery does not by itself produce a wakeup.
 
-Claude event delivery is implemented as an explicit launch opt-in with
-`NVIM_TEAM_DELIVERY=events`; the default is polling. It applies only to a newly
-spawned Claude supervisor process. SessionStart atomically registers the private
+Claude event delivery is selected at launch with `NVIM_TEAM_DELIVERY`. It began
+as an explicit `events` opt-in against a polling default, as this plan required
+while client behaviour was unproven; on the strength of the real-client evidence
+above it now defaults to `events` for Claude chats, with `poll` as the explicit
+opt-out (`agent-team.py:172`, documented in `agents.md`). Codex chats default to
+`poll`. Either way it applies only to a newly spawned Claude supervisor process. SessionStart atomically registers the private
 endpoint sidecar and SessionEnd removes it. After saving a terminal worker
 result, the runner resolves the stable team to its current owner and matching
 session, gates on `execution == "authorized"`, and sends a concise peer/tool
@@ -200,3 +206,72 @@ results across distinct run IDs, and full-report changes after the 1200-characte
 display cutoff. The compact inbox stores a full-field digest internally and
 returns `report_changed`, `run_id`, and the detail path only when an otherwise
 invisible change occurs.
+
+## First production review — 2026-09-14
+
+Measured from team `6127958c` under its Claude Fable 5.1 supervisor
+(`c5d352a2`, 2026-09-11 14:21–16:08, 107 minutes, 6 workers, `delivery=events`).
+Sources: `~/.local/state/nvim/agent-teams/c5d352a2-…/mcp.log`, each worker's
+`delivery_receipt`, and the supervisor rollout
+`~/.claude/projects/-Users-byron-seto-Documents-workspace-stackadapt-valhalla/c5d352a2-….jsonl`.
+
+Delivery met its acceptance criterion. Nine events, nine `socket_write=complete`
+receipts, eight delivered as fresh turns with a 6–14 s wake latency (mean ~10 s),
+and **zero polls across ~39 minutes of worker wait** in seven windows, the
+longest 11 minutes. The equivalent 30-second polling cadence would have been
+about 78 `team_status` calls (~24k tokens). The prior Codex supervisor on this
+same team made 158 `team_status` calls in 11 hours, 49 of them empty. The
+supervisor also verified git state with 15 real shell commands instead of the
+earlier run's inferred narration.
+
+Six defects found; all fixed in this change, each covered by a check in
+`check-team.py` verified to fail without its fix.
+
+1. **Busy delivery is weaker than idle delivery.** The `ad318d9d` failure event
+   arrived mid-turn and was logged `remove … reason: "absorbed_mid_turn"` — a
+   system-reminder inside the running turn, not a new turn. The supervisor
+   reacted only because its pre-end `team_status` independently showed
+   `status: error`. Documented in `agents.md`; the skill now states that the
+   pre-end read is what closes this window, rather than leaving it as a
+   formality a future edit might drop.
+2. **Failure events named the wrong cause.** The event carried
+   `record["message"]`, which on a backend failure is the tail of `backend.log`
+   — here an unrelated `atlassian-rovo` OAuth warning — while the real cause
+   (`could not auto resolve a provider … gpt-6-sol`) sat in `last_error` and
+   reached the supervisor only through `team_status`. `deliver_worker_report`
+   now includes `last_error`.
+3. **Takeover guaranteed a duplicated payload.** `dispatch` popped the inbox
+   entry after `team_takeover`, so the next `team_status` re-sent every worker
+   in full: 26,174 chars at 14:21:19 followed by 23,628 chars of the same 12
+   records at 14:21:40, ~5.9k tokens. `team_takeover` now runs its snapshot
+   with `full=True, inbox=inbox`, returning everything once and seeding the
+   inbox so the next read is a diff.
+4. **Checkpoints were the phase gate's lock-pick.** 17 checkpoints in 107
+   minutes (28,755 chars), all carrying a rewritten handoff although `handoff`
+   is optional. The clearest case: `phase="execution"` at 14:31:22 purely to
+   open a gate, worker started at 14:31:42, `phase="planning"` restored at
+   14:31:56. Event delivery compounds this — it turns one long polling turn
+   into many short ones, and the rule fired per turn. The skill and the tool
+   description now say a phase or authorization move sends no handoff, and
+   "before ending a turn" is narrowed to turns in which something changed.
+5. **No way to express a Codex planner.** The user asked for a Fable planner
+   and a Bifrost Astra planner. `kind="planner"` was hard-wired to `claude`, so
+   the supervisor restaged the second as `kind="executor"`, tripped the phase
+   gate, flipped the phase twice, re-sent ~8.3k chars of identical assignment,
+   and left a planning worker permanently recorded as an executor — where the
+   review gate still counts it. `planner_backend` now mirrors `reviewer_backend`:
+   checkpointable, `claude` by default, so the switch of billing route stays an
+   explicit user decision that is recorded, and the worker keeps `kind="planner"`.
+6. **Reflexive re-read after every event.** The skill told the supervisor to
+   call `team_status` after each event to confirm durable state; the event
+   already carries status, outcome and both evidence paths, so each report
+   entered context twice (~11k chars over 8 events). Narrowed to: read again
+   only for other workers or a report the event truncated. The pre-end read of
+   item 1 is a different call and stays.
+
+Context remains the binding constraint, not polling. The supervisor opened at
+61,650 tokens and closed at 180,808 in 107 minutes (~67k/hour, against ~6k/hour
+for the earlier Codex supervisor), roughly 20k per plan→implement→review
+episode. Items 3, 4 and 6 account for about 25k of it. The remainder is the
+61.6k harness baseline, 4.1k-char worker assignments, and tool-result volume —
+worth a separate pass, and not something event delivery was meant to address.

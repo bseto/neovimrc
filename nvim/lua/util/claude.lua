@@ -29,10 +29,11 @@ local VARIANTS = {
   { label = "claude-bf (Bifrost)", tag = "claude-bf", cmd = "claude-bf --enable-auto-mode" },
   { label = "codex-bf (Bifrost)", tag = "codex", backend = "codex-bf", cmd = "codex-bf --approve-for-me" },
 }
+local SCRIPT = vim.fn.stdpath("config") .. "/scripts/agent-team.py"
 for _, variant in ipairs(VARIANTS) do
   variant.backend = variant.backend or variant.tag
   variant.launch = "python3 "
-    .. vim.fn.shellescape(vim.fn.stdpath("config") .. "/scripts/agent-team.py")
+    .. vim.fn.shellescape(SCRIPT)
     .. " launch --backend "
     .. variant.backend
 end
@@ -57,6 +58,7 @@ end
 
 -- Number of the chat most recently opened/focused, used by toggle_last().
 M.last = nil
+local layout = "float" -- or "right"; lasts for this Neovim session
 
 --- Resolve the git root (falls back to cwd) so chats open at the project root,
 --- matching the old `git.use_git_root = true` behaviour.
@@ -76,29 +78,21 @@ local function display(buf, count)
   return "Chat " .. tostring(count or "?")
 end
 
+local function name_file(session)
+  return Status.home() .. "/" .. session .. "/name"
+end
+
+--- The name saved by M.rename for this agent session, if any.
+local function saved_name(session)
+  local ok, lines = pcall(vim.fn.readfile, name_file(session), "", 1)
+  return ok and lines[1] ~= "" and lines[1] or nil
+end
+
 --- List currently-open chats, sorted by chat number.
 --- Scans every buffer for the `b:snacks_terminal` marker snacks sets on
 --- terminal buffers, then keeps the ones running any of our launch commands.
 --- @return { count: integer, buf: integer, cmd: string }[]
-local function team_record(meta)
-  local id = meta.env and meta.env.NVIM_TEAM_SESSION
-  if not id then
-    return
-  end
-  local directory = vim.env.NVIM_TEAM_HOME or (vim.fn.expand("~") .. "/.local/state/nvim/agent-teams")
-  local file = io.open(directory .. "/" .. id .. "/agent.json", "r")
-  if not file then
-    return
-  end
-  local ok, record = pcall(vim.json.decode, file:read("*a"))
-  file:close()
-  if ok and record.team_id then
-    return team_record({ env = { NVIM_TEAM_SESSION = record.team_id } })
-  end
-  return ok and record or nil
-end
-
-local function chats(include_archived)
+local function chats()
   local out = {}
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buf) then
@@ -106,10 +100,7 @@ local function chats(include_archived)
         return vim.b[buf].snacks_terminal
       end)
       if ok and type(meta) == "table" and is_chat_cmd(meta.cmd) then
-        local record = team_record(meta)
-        if include_archived or not (record and record.archived) then
-          out[#out + 1] = { count = meta.id, buf = buf, cmd = meta.cmd }
-        end
+        out[#out + 1] = { count = meta.id, buf = buf, cmd = meta.cmd }
       end
     end
   end
@@ -166,19 +157,16 @@ function M.hide()
 end
 
 function M.sidebar()
+  if layout == "right" then
+    return vim.cmd.wincmd("h")
+  end
   if sidebar and sidebar:win_valid() then
     vim.cmd.stopinsert()
     sidebar:focus()
   end
 end
 
-local function show_sidebar(term)
-  if active and active ~= term and active:win_valid() then
-    active:hide()
-  end
-  active = term
-  M.last = vim.b[term.buf].snacks_terminal.id
-  vim.b[term.buf].claude_chat_unread = false
+local function ensure_sidebar()
   if not sidebar then
     sidebar = Snacks.win({
       show = false,
@@ -189,13 +177,13 @@ local function show_sidebar(term)
         return rail - 2
       end,
       col = function()
-        local _, _, left = dimensions()
-        return left
+        local _, rail, left = dimensions()
+        return layout == "right" and vim.o.columns - math.floor(vim.o.columns * 0.4) - rail or left
       end,
       height = 0.9,
       border = "rounded",
       title = " Agents ",
-      footer = " a:arc d:del A:list ",
+      footer = " n:new r:name d:del ",
       backdrop = false,
       wo = { wrap = false, cursorline = true, scrolloff = 0 },
       bo = { filetype = "agent_sidebar" },
@@ -205,6 +193,9 @@ local function show_sidebar(term)
         ["<CR>"] = function()
           local chat = selected()
           if chat then
+            if layout == "right" then
+              sidebar:hide()
+            end
             M.open(chat.count)
           end
         end,
@@ -222,19 +213,11 @@ local function show_sidebar(term)
         n = function()
           M.new()
         end,
-        a = function()
-          M.manage_selected("archive")
-        end,
         d = function()
-          M.manage_selected("delete")
-        end,
-        A = function()
-          require("util.agent_team").toggle(true)
+          M.delete_selected()
         end,
         ["?"] = function()
-          vim.notify(
-            "Enter: open · r: rename · n: new\na: archive · d: delete · A: archived chats/teams\nArchive hides without stopping work. In archives, a restores and i opens the chat."
-          )
+          vim.notify("Enter: open · r: rename · n: new · d: delete (stops the agent)")
         end,
         ["<C-l>"] = function()
           if active and active:win_valid() then
@@ -244,6 +227,22 @@ local function show_sidebar(term)
       },
     })
   end
+end
+
+local function show_sidebar(term)
+  if active and active ~= term and active:win_valid() then
+    active:hide()
+  end
+  active = term
+  M.last = vim.b[term.buf].snacks_terminal.id
+  vim.b[term.buf].claude_chat_unread = false
+  if layout == "right" then
+    if sidebar then
+      sidebar:hide()
+    end
+    return
+  end
+  ensure_sidebar()
   sidebar.opts.zindex = term.opts.zindex
   sidebar:show()
   render()
@@ -257,6 +256,10 @@ local function refresh(win)
   local state = states[vim.b[win.buf].claude_chat_status] or states.unknown
   win.opts.title = " " .. state[2] .. " "
   win.opts.footer = ""
+  local id = vim.b[win.buf].snacks_terminal.id
+  win.opts.wo.winbar = win.opts.position == "right"
+      and (" %d %s · %s %s"):format(id, display(win.buf, id), state[1], state[2]):gsub("%%", "%%%%")
+    or ""
   local meta = vim.b[win.buf].snacks_terminal
   if meta and type(meta.cmd) == "string" and meta.cmd:find("codex-bf", 1, true) then
     local budget = require("util.bifrost_budget")
@@ -266,7 +269,53 @@ local function refresh(win)
   win:update()
 end
 
+local function record(session)
+  local ok, value = pcall(function()
+    return vim.json.decode(table.concat(vim.fn.readfile(Status.home() .. "/" .. session .. "/agent.json"), "\n"))
+  end)
+  return ok and type(value) == "table" and value or nil
+end
+
+local function open_file()
+  return Status.home() .. "/open-chats.json"
+end
+
+local function read_open()
+  local ok, value = pcall(function()
+    return vim.json.decode(table.concat(vim.fn.readfile(open_file()), "\n"))
+  end)
+  return ok and type(value) == "table" and value or {}
+end
+
+-- Repos this Neovim has had chats in, so closing a repo's last chat clears its entry.
+local touched, last_saved = {}, nil
+
+--- Remember which chats are open per repo (keyed by each chat's cwd) for M.restore after a reboot.
+local function save_open()
+  local by_cwd = {}
+  for _, chat in ipairs(chats()) do
+    local session = vim.b[chat.buf].snacks_terminal.env.NVIM_TEAM_SESSION
+    local rec = session and record(session)
+    if rec and rec.cwd then
+      touched[rec.cwd] = true
+      by_cwd[rec.cwd] = by_cwd[rec.cwd] or {}
+      table.insert(by_cwd[rec.cwd], session)
+    end
+  end
+  local encoded = vim.json.encode(by_cwd)
+  if encoded == last_saved then
+    return
+  end
+  last_saved = encoded
+  local all = read_open()
+  for cwd in pairs(touched) do
+    all[cwd] = by_cwd[cwd]
+  end
+  pcall(vim.fn.writefile, { vim.json.encode(all) }, open_file())
+end
+
 function M.refresh_all()
+  save_open()
   for _, t in ipairs(Snacks.terminal.list()) do
     local meta = vim.b[t.buf] and vim.b[t.buf].snacks_terminal
     if type(meta) == "table" and is_chat_cmd(meta.cmd) then
@@ -274,6 +323,47 @@ function M.refresh_all()
     end
   end
   render()
+end
+
+local function age(created)
+  local seconds = os.time() - created
+  if seconds < 3600 then
+    return math.max(1, math.floor(seconds / 60)) .. "m ago"
+  end
+  return seconds < 86400 and math.floor(seconds / 3600) .. "h ago" or math.floor(seconds / 86400) .. "d ago"
+end
+
+--- Chats that need you: waiting on approval, then finished turns not yet seen.
+function M.attention()
+  local waiting, unread = {}, {}
+  for _, chat in ipairs(chats()) do
+    if vim.b[chat.buf].claude_chat_status == "waiting" then
+      waiting[#waiting + 1] = chat
+    elseif vim.b[chat.buf].claude_chat_unread then
+      unread[#unread + 1] = chat
+    end
+  end
+  return waiting, unread
+end
+
+--- Open the next chat that needs you, skipping the one already in front of you.
+function M.next_attention()
+  local waiting, unread = M.attention()
+  local list = vim.list_extend(waiting, unread)
+  local current = vim.api.nvim_get_current_buf()
+  local from = 0
+  for i, chat in ipairs(list) do
+    if chat.buf == current then
+      from = i
+    end
+  end
+  for step = 1, #list do
+    local chat = list[(from + step - 1) % #list + 1]
+    if chat.buf ~= current then
+      return M.open(chat.count)
+    end
+  end
+  vim.notify("No chats need you")
 end
 
 --- @param count integer
@@ -284,8 +374,13 @@ local function term_opts(count, session)
     cwd = root(),
     env = { NVIM_TEAM_SESSION = session },
     win = {
-      position = "float",
+      position = layout,
+      stack = false,
+      wo = { winfixwidth = true },
       width = function()
+        if layout == "right" then
+          return math.floor(vim.o.columns * 0.4)
+        end
         local width, rail = dimensions()
         return width - rail - 2
       end,
@@ -315,14 +410,6 @@ local function term_opts(count, session)
           desc = "Send Escape to agent",
         },
         ["<C-h>"] = { "<C-h>", M.sidebar, mode = "n", desc = "Focus agents" },
-        ["<leader>ct"] = {
-          "<leader>ct",
-          function()
-            require("util.agent_team").toggle()
-          end,
-          mode = "n",
-          desc = "Team view",
-        },
         q = M.hide,
       },
       on_win = function(self)
@@ -357,7 +444,7 @@ end
 --- through M.new() (which picks the variant first).
 --- @param cmd string
 local function spawn(cmd, session)
-  local n = next_count(chats(true))
+  local n = next_count(chats())
   M.last = n
   session = session or vim.trim(vim.fn.system("uuidgen")):lower()
   local term = Snacks.terminal.open(variant_for(cmd).launch, term_opts(n, session))
@@ -378,56 +465,42 @@ local function spawn(cmd, session)
   return term
 end
 
-function M.manage_selected(action)
+--- Stop the selected chat's agent (and any workers it started) and remove its
+--- saved records, after confirmation.
+function M.delete_selected()
   local chat = selected()
-  if not chat then
+  local meta = chat and vim.b[chat.buf].snacks_terminal
+  local session = meta and meta.env and meta.env.NVIM_TEAM_SESSION
+  if not session then
     return
   end
-  local record = team_record(vim.b[chat.buf].snacks_terminal)
-  if not record then
-    vim.notify("This chat has no saved session record. Reopen it with the current launcher first.", vim.log.levels.WARN)
-    return
-  end
-  record.name = display(chat.buf, chat.count)
-  require("util.agent_team").manage(action, record)
-end
-
-function M.after_manage(id, action, chat_ids)
-  for _, term in ipairs(Snacks.terminal.list()) do
-    local meta = vim.b[term.buf].snacks_terminal
-    local record = meta and team_record(meta)
-    local session = meta and meta.env and meta.env.NVIM_TEAM_SESSION
-    if session and (session == id or (record and record.id == id) or vim.tbl_contains(chat_ids or {}, session)) then
-      if action == "archive" or action == "delete" then
-        if active == term then
-          M.hide()
-        else
-          term:hide()
+  vim.ui.select({ "Cancel", "Delete chat" }, {
+    prompt = "Delete " .. display(chat.buf, chat.count) .. "? Stops its agents and removes their transcripts; project files stay.",
+  }, function(choice)
+    if choice ~= "Delete chat" then
+      return
+    end
+    vim.system({ "python3", SCRIPT, "manage", "delete", "--agent", session }, { text = true }, function(result)
+      vim.schedule(function()
+        if result.code ~= 0 then
+          vim.notify("Delete failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
+          return
         end
-      end
-      if action == "delete" and vim.api.nvim_buf_is_valid(term.buf) then
-        vim.api.nvim_buf_delete(term.buf, { force = true })
-      end
-    end
-  end
-  M.refresh_all()
-end
-
--- Reattach the durable supervisor after restarting Neovim.
-function M.open_session(record)
-  for _, term in ipairs(Snacks.terminal.list()) do
-    local meta = vim.b[term.buf].snacks_terminal
-    if meta and meta.env and meta.env.NVIM_TEAM_SESSION == record.id then
-      if not vim.b[term.buf].claude_chat_exited then
-        return M.open(meta.id)
-      end
-    end
-  end
-  for _, variant in ipairs(VARIANTS) do
-    if variant.backend == record.backend then
-      return spawn(variant.cmd, record.id)
-    end
-  end
+        local ok, value = pcall(vim.json.decode, result.stdout or "")
+        local ids = ok and value.chat_ids or { session }
+        for _, term in ipairs(Snacks.terminal.list()) do
+          local m = vim.b[term.buf].snacks_terminal
+          if m and m.env and vim.tbl_contains(ids, m.env.NVIM_TEAM_SESSION) then
+            if active == term then
+              M.hide()
+            end
+            vim.api.nvim_buf_delete(term.buf, { force = true })
+          end
+        end
+        M.refresh_all()
+      end)
+    end)
+  end)
 end
 
 --- Open a brand-new chat, prompting for the launch variant (claude,
@@ -468,12 +541,40 @@ function M.open(count)
   for _, term in ipairs(Snacks.terminal.list()) do
     local meta = vim.b[term.buf].snacks_terminal
     if meta and is_chat_cmd(meta.cmd) and meta.id == count then
+      term.opts.position = layout
       term:show():focus()
       vim.b[term.buf].claude_chat_unread = false
       render()
+      if layout == "right" then
+        -- shortcut: the pty sometimes ends up narrower than the panel (cause not found); a 1-column
+        -- nudge makes the agent redraw. Remove once the root cause is fixed.
+        local width = vim.api.nvim_win_get_width(term.win)
+        vim.defer_fn(function()
+          if term:win_valid() then
+            vim.api.nvim_win_set_width(term.win, width - 1)
+            vim.defer_fn(function()
+              if term:win_valid() then
+                vim.api.nvim_win_set_width(term.win, width)
+              end
+            end, 50)
+          end
+        end, 50)
+      end
       return term
     end
   end
+end
+
+--- Show or hide the agent list. In the right-hand layout it floats beside the panel and takes focus.
+function M.toggle_sidebar()
+  if sidebar and sidebar:win_valid() then
+    return sidebar:hide()
+  end
+  ensure_sidebar()
+  sidebar:show()
+  render()
+  vim.cmd.stopinsert()
+  sidebar:focus()
 end
 
 --- Jump to chat number `n` if it's open; otherwise do nothing (with a hint).
@@ -501,32 +602,107 @@ function M.toggle_last()
   return M.open(count)
 end
 
---- Pick an open chat (by name) or create a new one via vim.ui.select.
-function M.pick()
-  local list = chats()
-  local items = {}
-  for _, c in ipairs(list) do
-    items[#items + 1] = {
-      count = c.count,
-      label = ("%d. %s · %s"):format(c.count, variant_for(c.cmd).tag, display(c.buf, c.count)),
-    }
+--- Switch chats between the centred popup and a right-hand panel, for this Neovim session.
+function M.toggle_layout()
+  layout = layout == "float" and "right" or "float"
+  local term = active and active:win_valid() and active
+  if term then
+    M.hide()
+    return M.open(vim.b[term.buf].snacks_terminal.id)
   end
-  items[#items + 1] = { count = nil, label = "＋ New chat" }
+  vim.notify(layout == "right" and "Chats open in a right-hand panel" or "Chats open as a popup")
+end
 
-  vim.ui.select(items, {
-    prompt = "Chats",
-    format_item = function(item)
-      return item.label
-    end,
-  }, function(choice)
-    if not choice then
-      return
+--- Reopen the chats that were open in this repo last time (resuming saved sessions after a
+--- reboot), then show the last one. Falls back to the picker when there is nothing to restore.
+function M.restore()
+  local open = {}
+  for _, c in ipairs(chats()) do
+    open[vim.b[c.buf].snacks_terminal.env.NVIM_TEAM_SESSION] = c.count
+  end
+  local restored
+  for _, session in ipairs(read_open()[root()] or {}) do
+    local rec = record(session)
+    local variant = rec and vim.iter(VARIANTS):find(function(v)
+      return v.backend == rec.backend
+    end)
+    -- Codex can only resume once its session ID was recorded.
+    if variant and not open[session] and (rec.backend:match("^claude") or rec.session_id) then
+      if restored then
+        restored:hide()
+      end
+      restored = spawn(variant.cmd, session)
+      if restored then
+        vim.b[restored.buf].claude_chat_name = saved_name(session)
+      end
     end
-    if choice.count then
-      M.open(choice.count)
-    else
-      M.new()
-    end
+  end
+  if restored then
+    return
+  end
+  if next(open) then
+    return M.toggle_last()
+  end
+  M.pick()
+end
+
+--- Pick an open chat, reopen a chat still running in tmux, or create a new one.
+function M.pick()
+  vim.system({ "python3", SCRIPT, "running" }, { text = true }, function(result)
+    vim.schedule(function()
+      local ok, running = pcall(vim.json.decode, result.stdout or "")
+      if result.code ~= 0 or not ok or type(running) ~= "table" then
+        vim.notify("Could not list running chats", vim.log.levels.WARN)
+        running = {}
+      end
+      local items, open = {}, {}
+      for _, c in ipairs(chats()) do
+        open[vim.b[c.buf].snacks_terminal.env.NVIM_TEAM_SESSION] = true
+        items[#items + 1] = {
+          count = c.count,
+          label = ("%d. %s · %s"):format(c.count, variant_for(c.cmd).tag, display(c.buf, c.count)),
+        }
+      end
+      for _, record in ipairs(running) do
+        local variant = vim.iter(VARIANTS):find(function(v)
+          return v.backend == record.backend
+        end)
+        if variant and not open[record.id] then
+          local name = saved_name(record.id) or (record.role == "supervisor" and record.name) or nil
+          local where = vim.fs.basename(record.cwd or "")
+          items[#items + 1] = {
+            variant = variant,
+            id = record.id,
+            name = name,
+            label = ("↺ %s · %s%s"):format(
+              variant.tag,
+              name and (name .. " · " .. where) or (where .. " · " .. age(record.created or os.time())),
+              record.attached > 0 and " (open elsewhere)" or ""
+            ),
+          }
+        end
+      end
+      items[#items + 1] = { label = "＋ New chat" }
+      vim.ui.select(items, {
+        prompt = "Chats",
+        format_item = function(item)
+          return item.label
+        end,
+      }, function(choice)
+        if not choice then
+          return
+        elseif choice.count then
+          M.open(choice.count)
+        elseif choice.id then
+          local term = spawn(choice.variant.cmd, choice.id)
+          if term then
+            vim.b[term.buf].claude_chat_name = choice.name
+          end
+        else
+          M.new()
+        end
+      end)
+    end)
   end)
 end
 
@@ -559,9 +735,23 @@ function M.rename()
       return
     end
     vim.b[buf].claude_chat_name = (input ~= "" and input) or nil
+    local session = vim.b[buf].snacks_terminal.env.NVIM_TEAM_SESSION
+    if input == "" then
+      vim.fn.delete(name_file(session))
+    elseif not pcall(vim.fn.writefile, { input }, name_file(session)) then
+      vim.notify("Chat name not saved", vim.log.levels.WARN)
+    end
     M.refresh_all()
   end)
 end
+
+vim.api.nvim_create_autocmd("VimResized", {
+  callback = function()
+    if layout == "right" and active and active:win_valid() then
+      vim.api.nvim_win_set_width(active.win, math.floor(vim.o.columns * 0.4))
+    end
+  end,
+})
 
 local timer = vim.uv.new_timer()
 timer:start(
@@ -574,10 +764,10 @@ timer:start(
     end
     Status.poll(list, function(chat, state)
       local previous = vim.b[chat.buf].claude_chat_status
-      local focused = vim.api.nvim_get_current_buf() == chat.buf
-      if previous == "busy" and state == "idle" and not focused then
+      local visible = vim.fn.bufwinid(chat.buf) ~= -1
+      if previous == "busy" and state == "idle" and not visible then
         vim.b[chat.buf].claude_chat_unread = true
-      elseif focused then
+      elseif visible then
         vim.b[chat.buf].claude_chat_unread = false
       end
       vim.b[chat.buf].claude_chat_status = state

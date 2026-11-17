@@ -5,9 +5,9 @@ description: Take over an existing Neovim supervisor team by stable team ID afte
 
 `/supervise-takeover <team-id>` in Claude or `$supervise-takeover <team-id>` in
 Codex explicitly authorizes transferring supervisor ownership; it does not expand
-the project's execution authorization. The ID is shown in the Neovim team detail
-view (`<leader>ct`, then `l`), and `y` copies the command. If no ID is supplied
-or it is ambiguous, ask; never guess the latest team.
+the project's execution authorization. The ID is the one the previous supervisor
+showed the user. If no ID is supplied or it is ambiguous, ask; never guess the
+latest team.
 
 Use the `nvim_team` tools from a Neovim-launched chat. If `team_takeover` is
 unavailable, open a fresh chat with the updated launcher; do not approximate a
@@ -27,8 +27,8 @@ automatically take ownership back after a stale-token error.
 
 Read only the returned goal brief, handoff, execution state, and worker
 summaries — never the previous supervisor's conversation or worker transcripts.
-Preserve `phase`, `plan_path`, `reviewer_backend`, and each agent's `kind` and
-`model`, and reuse the existing workers and their sessions rather than restarting
+Preserve `phase`, `plan_path`, the `routes` and `budget` shown in
+`team_status`, and each agent's `kind`, `purpose` and `model`, and reuse the existing workers and their sessions rather than restarting
 the pipeline or launching duplicates. If the review backend choice is missing
 when work reaches review, ask then. A legacy team with no phase or plan needs its
 planning state reconciled before new execution; do not fabricate a plan.

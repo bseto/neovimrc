@@ -22,6 +22,13 @@ import uuid
 SCRIPT = Path(__file__).resolve()
 BACKENDS = ("claude", "claude-bf", "codex-bf")
 EXECUTION_MODEL = "gpt-5.6-terra"
+# Default route per purpose: (kind, backend, model). Review has none: the user chooses it.
+PURPOSES = {"plan": ("planner", "claude", "opus"), "research": ("planner", "claude-bf", "opus"),
+            "code": ("executor", "claude", "opus"), "qa": ("executor", "claude-bf", "sonnet"),
+            "review": ("reviewer", None, None)}
+KIND_PURPOSE = {"planner": "plan", "executor": "code", "reviewer": "review"}
+BUDGETS = ("subscription", "bifrost")
+CODEX_OAUTH_PLUGINS = ("atlassian-rovo",)
 SCHEMA = json.loads(SCRIPT.with_name("team-result.schema.json").read_text())
 ROOT = Path(os.environ.get("NVIM_TEAM_HOME", Path.home() / ".local/state/nvim/agent-teams"))
 
@@ -139,6 +146,12 @@ def supervisor_command(record, exists):
     return command
 
 
+def ensure_mcp_login(server):
+    codex = shutil.which("codex") or "codex"
+    print(f"{server}: running `codex mcp login {server}` before launch", flush=True)
+    subprocess.run([codex, "mcp", "login", server], check=True)
+
+
 def supervisor_hook(agent_id, status):
     payload = json.load(sys.stdin)
     initial = read(agent_id)
@@ -190,6 +203,9 @@ def launch(backend, agent_id):
                 record["delivery_reason"] = "event delivery is only verified for Claude supervisors"
             else:
                 record.pop("delivery_reason", None)
+        if not running and not backend.startswith("claude"):
+            for server in CODEX_OAUTH_PLUGINS:
+                ensure_mcp_login(server)
         record.setdefault("delivery", "poll")
         save(record)
         if not running:
@@ -208,6 +224,8 @@ def launch(backend, agent_id):
                  shlex.join(["zsh", "-c", shlex.join(command)]), env=env, check=True)
             tmux("set-option", "-t", name, "status", "off", check=True)
             tmux("set-option", "-t", name, "history-limit", "50000", check=True)
+        # Forward app mouse events (Claude), or scroll tmux history (Codex), including on reattach.
+        tmux("set-option", "-t", name, "mouse", "on", check=True)
     os.environ.pop("TMUX", None)
     os.execvp("tmux", ["tmux", "-L", "nvim-agents", "attach-session", "-t", name])
 
@@ -250,7 +268,25 @@ def write_handoff(record):
         temporary.replace(path)
 
 
-def team_checkpoint(supervisor, execution, handoff=None, brief=None, phase=None, plan_path=None, reviewer_backend=None):
+def team_routes(record):
+    """Effective backend and model per purpose; budget="bifrost" moves subscription Claude to claude-bf."""
+    legacy = {"plan": record.get("planner_backend"), "review": record.get("reviewer_backend")}
+    routes = {}
+    for purpose, (_, backend, model) in PURPOSES.items():
+        saved = record.get("routes", {}).get(purpose, {})
+        backend = saved.get("backend") or legacy.get(purpose) or backend
+        if not backend:
+            continue
+        if backend == "claude" and record.get("budget") == "bifrost":
+            backend = "claude-bf"
+        claude = backend.startswith("claude")
+        routes[purpose] = {"backend": backend,
+                           "model": saved.get("model") or (model if claude and model else "opus" if claude else EXECUTION_MODEL)}
+    return routes
+
+
+def team_checkpoint(supervisor, execution, handoff=None, brief=None, phase=None, plan_path=None,
+                    reviewer_backend=None, planner_backend=None, routes=None, budget=None):
     if execution not in ("planning", "authorized", "paused", "finished"):
         raise ValueError("Invalid execution state")
     if handoff is not None and (not handoff.strip() or len(handoff) > 6000):
@@ -267,8 +303,31 @@ def team_checkpoint(supervisor, execution, handoff=None, brief=None, phase=None,
         next_phase = phase or record.get("phase", "planning")
         if next_phase not in ("planning", "execution", "review", "finished"):
             raise ValueError("Invalid workflow phase")
-        if reviewer_backend is not None and reviewer_backend not in ("claude", "codex-bf"):
-            raise ValueError("Choose Claude subscription or Bifrost GPT for review")
+        if reviewer_backend is not None and reviewer_backend not in BACKENDS:
+            raise ValueError("Choose claude, claude-bf, or codex-bf for review")
+        if planner_backend is not None and planner_backend not in BACKENDS:
+            raise ValueError("Choose claude, claude-bf, or codex-bf for planning")
+        if budget is not None and budget not in BUDGETS:
+            raise ValueError("budget must be subscription or bifrost")
+        routes = dict(routes or {})
+        for purpose, backend in (("plan", planner_backend), ("review", reviewer_backend)):
+            if backend is not None:
+                routes[purpose] = {"backend": backend}
+        for purpose, route in routes.items():
+            if purpose not in PURPOSES or not isinstance(route, dict) or set(route) - {"backend", "model"}:
+                raise ValueError("routes maps plan, research, code, qa, or review to {backend, model}")
+            if route.get("backend") not in (None, *BACKENDS):
+                raise ValueError("Route backends are " + ", ".join(BACKENDS))
+            model = route.get("model")
+            if model is not None and (not isinstance(model, str) or not model.strip() or model.startswith("-")):
+                raise ValueError("Provide a model name")
+        # Applied before the gates so review sees the new choice; nothing is saved if a gate fails.
+        legacy = {purpose: {"backend": record.pop(key)} for purpose, key in
+                  (("plan", "planner_backend"), ("review", "reviewer_backend")) if record.get(key)}
+        saved_routes = {**legacy, **record.get("routes", {}), **routes}
+        record["routes"] = {purpose: route for purpose, route in saved_routes.items() if route}
+        if budget is not None:
+            record["budget"] = budget
         if plan_path is not None:
             path = Path(plan_path)
             if not path.is_absolute() or not path.is_file():
@@ -285,7 +344,7 @@ def team_checkpoint(supervisor, execution, handoff=None, brief=None, phase=None,
                           ("starting", "working", "stopping", "needs supervisor", "blocked", "error", "interrupted")]
             if unresolved:
                 raise ValueError("Resolve or worker_stop these executors before review: " + "; ".join(unresolved))
-        if next_phase == "review" and not (reviewer_backend or record.get("reviewer_backend")):
+        if next_phase == "review" and "review" not in team_routes(record):
             raise ValueError("Ask the user to choose the review backend before starting review")
         if next_phase == "finished" and not any(row.get("kind") == "reviewer" and row.get("status") == "done" for row in workers):
             raise ValueError("A reviewer must finish before declaring completion")
@@ -298,14 +357,12 @@ def team_checkpoint(supervisor, execution, handoff=None, brief=None, phase=None,
         if brief is not None:
             record["brief"] = brief
         record.update(handoff=handoff, execution=execution, phase=next_phase, checkpoint_at=time.time())
-        if reviewer_backend is not None:
-            record["reviewer_backend"] = reviewer_backend
         save(record)
         write_handoff(record)
     return {"team_id": supervisor, "execution": execution, "phase": next_phase, "saved": True}
 
 
-def team_takeover(caller, team_id, session_id=None):
+def team_takeover(caller, team_id, session_id=None, inbox=None):
     team_id = str(uuid.UUID(team_id))
     with delivery_locked(team_id), locked(team_id):
         record = read(team_id)
@@ -331,7 +388,9 @@ def team_takeover(caller, team_id, session_id=None):
         record.setdefault("handoff", "Legacy team: verify progress and execution authorization with the user.")
         save(record)
         write_handoff(record)
-    result = team_status(team_id)
+    # full=True always returns every worker AND seeds the inbox, so the new owner's
+    # first team_status is a diff instead of a second copy of what it just read.
+    result = team_status(team_id, full=True, inbox=inbox)
     result.update(brief=record["brief"], handoff=record["handoff"], owner_token=record["owner_token"])
     return result
 
@@ -376,22 +435,30 @@ def launch_worker(record, message):
     return record
 
 
-def worker_start(supervisor, name, task, backend=None, cwd=None, kind="executor", model=None, mcp_config=None):
+def worker_start(supervisor, name, task, backend=None, cwd=None, kind="executor", model=None, mcp_config=None,
+                 purpose=None):
     with locked(supervisor):
         if read(supervisor).get("deleting"):
             raise ValueError("Team is being deleted")
-        return start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_config)
+        return start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_config, purpose)
 
 
-def start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_config):
+def start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_config, purpose=None):
     parent = read(supervisor)
     if parent["role"] != "supervisor":
         raise ValueError("Call team_start first")
     if kind not in ("planner", "executor", "reviewer"):
         raise ValueError("Choose planner, executor, or reviewer")
-    backend = backend or ("claude" if kind == "planner" else
-                          parent.get("reviewer_backend", "codex-bf") if kind == "reviewer" else "codex-bf")
-    model = model or ("opus" if backend.startswith("claude") else EXECUTION_MODEL)
+    purpose = purpose or KIND_PURPOSE[kind]
+    if PURPOSES.get(purpose, (None,))[0] != kind:
+        raise ValueError("Purpose must match kind: plan/research=planner, code/qa=executor, review=reviewer")
+    route = team_routes(parent).get(purpose)
+    if not backend and not route:
+        raise ValueError("Ask the user to choose the review backend before starting review")
+    backend = backend or route["backend"]
+    # An explicit backend outside the route gets that backend's own default model.
+    model = model or (route["model"] if route and route["backend"] == backend else
+                      "opus" if backend.startswith("claude") else EXECUTION_MODEL)
     if not model.strip() or model.startswith("-"):
         raise ValueError("Provide a model name")
     if backend not in BACKENDS or not task.strip() or not name.strip():
@@ -403,7 +470,7 @@ def start_owned_worker(supervisor, name, task, backend, cwd, kind, model, mcp_co
         raise ValueError("Workspace must be an existing directory")
     agent_id = str(uuid.uuid4())
     record = {"id": agent_id, "parent": supervisor, "role": "worker", "name": name,
-              "backend": backend, "kind": kind, "model": model,
+              "backend": backend, "kind": kind, "purpose": purpose, "model": model,
               "cwd": str(workspace), "task": task, "created": time.time(),
               "config_dir": parent.get("config_dir", ""), "mcp_config": mcp_config}
     with locked(agent_id):
@@ -453,6 +520,15 @@ def snapshot():
     return rows
 
 
+def running():
+    """Chats and supervisors whose tmux session is alive, for reopening after a Neovim restart."""
+    listed = tmux("list-sessions", "-F", "#{session_name} #{session_attached}", capture_output=True, text=True)
+    attached = dict(line.split(" ", 1) for line in listed.stdout.splitlines())
+    return [{"id": row["id"], "backend": row["backend"], "name": row.get("name"), "role": row.get("role"),
+             "cwd": row.get("cwd"), "created": row.get("created"), "attached": int(attached["team-" + row["id"]])}
+            for row in records() if "team-" + row.get("id", "") in attached]
+
+
 def manage_team(agent_id, action):
     record = read(agent_id)
     supervisor = record.get("team_id") or record.get("parent") or record["id"]
@@ -460,12 +536,6 @@ def manage_team(agent_id, action):
         parent = read(supervisor)
         if parent.get("role") not in ("supervisor", "chat"):
             raise ValueError("Select a team or chat")
-        if action in ("archive", "restore"):
-            if parent.get("deleting"):
-                raise ValueError("Team is being deleted")
-            parent["archived"] = action == "archive"
-            save(parent)
-            return parent
         if action != "delete":
             raise ValueError("Unknown team action")
         parent["deleting"] = True
@@ -497,7 +567,7 @@ def manage_team(agent_id, action):
 
 
 def worker_summary(row):
-    result = {key: row[key] for key in ("id", "name", "backend", "kind", "model", "cwd", "status") if key in row}
+    result = {key: row[key] for key in ("id", "name", "backend", "kind", "purpose", "model", "cwd", "status") if key in row}
     for key in ("assignment", "message", "last_report"):
         value = row.get(key, row.get("task", "") if key == "assignment" else "")
         if value:
@@ -551,8 +621,9 @@ def team_status(supervisor, wait_seconds=0, full=False, inbox=None):
         rows = [worker_summary(row) for row in worker_records]
         parent = read(supervisor)
         summary = {key: parent[key] for key in
-                   ("id", "name", "backend", "status", "owner", "execution", "phase", "plan_path", "reviewer_backend",
+                   ("id", "name", "backend", "status", "owner", "execution", "phase", "plan_path",
                     "checkpoint_at") if key in parent}
+        summary.update(budget=parent.get("budget", "subscription"), routes=team_routes(parent))
         summary.update(delivery_capability(parent))
         # checkpoint_at moves on the supervisor's own checkpoints; that is not news to it.
         current = {"supervisor": {key: value for key, value in summary.items() if key != "checkpoint_at"},
@@ -665,10 +736,14 @@ def deliver_worker_report(agent_id, run_id):
             if (prior.get("event_id"), prior.get("owner"), prior.get("session_id"), prior.get("socket_write")) == (
                     event_id, owner_id, session_id, "complete"):
                 return prior
+            # On a backend failure the saved message is the tail of backend.log, which
+            # often names an unrelated warning; last_error holds the actual cause.
+            cause = f"last_error={record['last_error'][:600]}\n" if record.get("last_error") else ""
             message = (
                 "Supervisor worker report (peer/tool report; not user approval).\n"
                 f"event_id={event_id}\nworker={record.get('name')} ({agent_id})\nrun_id={run_id}\n"
                 f"kind={kind}\nstatus={record.get('status')}\nreport={record.get('message', '')[:1200]}\n"
+                f"{cause}"
                 f"details={directory(agent_id) / 'activity.jsonl'}\n"
                 f"transcript={directory(agent_id) / 'chat.md'}"
             )
@@ -723,6 +798,12 @@ def run_worker(agent_id, run_id):
             save(record)
         parent = read(record["parent"])
         duties = {
+            "research": "Research only, read-only: do not change project code or config. Write your findings to one "
+                        "notes file in the workspace and return its absolute path and a short summary. "
+                        "Ask the supervisor about missing decisions.",
+            "qa": "Run the assigned checks and record evidence in the workspace: exact commands, raw output, and "
+                  "timestamps. Do not edit code or tests to make anything pass; a check that could not run is "
+                  "blocked, never passed.",
             "planner": "Research and plan only; do not implement project changes. Save a detailed plan in the workspace, "
                        "including findings, file/worktree scope, steps, dependencies, risks, and acceptance tests. "
                        "Return its absolute path and a short summary. Ask the supervisor about missing decisions.",
@@ -733,14 +814,15 @@ def run_worker(agent_id, run_id):
         }
         prompt = (
             "You are a worker reporting to a supervisor. Work only on the assigned task.\n"
-            + duties.get(record.get("kind"), duties["executor"]) + "\n"
+            + (duties.get(record.get("purpose")) or duties.get(record.get("kind"), duties["executor"])) + "\n"
             "For missing decisions, finish this turn with kind=question and your question. "
             "The supervisor will answer by resuming this same conversation. "
             "Permission failures are kind=blocked, never bypass permissions. "
             "Do not delegate additional agents. You get one turn: an interim message ends it, so write artifacts "
             "incrementally with tools (one file per step, never a whole plan in one reply) and report once at the end. "
             "Compute counts and diffs with commands, not by hand. After creating or editing anything in an external "
-            "system, re-fetch it and verify the result. Return ONLY a JSON object at the end: "
+            "system, re-fetch it and verify the result. Leave no process of your own running: a browser opened with "
+            "agent-browser outlives your turn, so run `agent-browser close` before you report. Return ONLY a JSON object at the end: "
             '{"kind":"result|question|blocked","message":"your report or question"}.\n\n'
             "Keep the report concise: outcome, changed file paths, validation, blockers, next action. "
             "Save detailed findings in the workspace and return their paths instead of long logs or diffs.\n\n"
@@ -844,23 +926,28 @@ def tool(name, description, properties, required):
 
 
 STRING = {"type": "string"}
+ROUTE = {"type": "object", "properties": {"backend": {"type": "string", "enum": list(BACKENDS)}, "model": STRING}, "additionalProperties": False}
 TOOLS = [
     tool("team_start", "Register or update a supervisor with a 1–3 paragraph goal brief. Supply the actual session_id. Save the returned owner_token for subsequent mutations; existing teams require it.",
          {"name": STRING, "brief": STRING, "session_id": STRING, "owner_token": STRING}, ["name", "brief"]),
     tool("team_takeover", "Explicitly transfer a stable team to THIS conversation after a reset or in a new chat. Preserves workers and execution state. Returns goal, handoff, worker summaries and a new owner_token; invalidates the old token.",
          {"team_id": STRING, "session_id": STRING}, ["team_id"]),
-    tool("team_checkpoint", "Save execution authorization state and phase, with a concise current handoff. Update after decisions, authorization, blockers, or next actions change, and before ending a turn. Omit handoff to keep the saved one; optional brief replaces the 1–3 paragraph goal.",
+    tool("team_checkpoint", "Save execution authorization state and phase, with a concise current handoff. Update after decisions, authorization, blockers, or next actions change, and before ending a turn. Omit handoff whenever the saved text still fits: moving phase or authorization is not by itself a reason to rewrite it. Optional brief replaces the 1–3 paragraph goal. routes sets the backend and model per purpose (plan, research, code, qa, review); each purpose given replaces its saved route, others are kept; {} resets a purpose to its default (plan/code claude opus, research claude-bf opus, qa claude-bf sonnet, review unset). planner_backend and reviewer_backend are shorthands for the plan and review route backends. budget=bifrost moves every claude route to claude-bf for the next worker started; subscription moves them back. team_status shows the effective routes.",
          {"handoff": STRING, "execution": {"type": "string", "enum": ["planning", "authorized", "paused", "finished"]},
           "brief": STRING, "phase": {"type": "string", "enum": ["planning", "execution", "review", "finished"]},
-          "plan_path": STRING, "reviewer_backend": {"type": "string", "enum": ["claude", "codex-bf"]},
+          "plan_path": STRING, "reviewer_backend": {"type": "string", "enum": list(BACKENDS)},
+          "planner_backend": {"type": "string", "enum": list(BACKENDS)},
+          "routes": {"type": "object", "properties": {purpose: ROUTE for purpose in PURPOSES}, "additionalProperties": False},
+          "budget": {"type": "string", "enum": list(BUDGETS)},
           "owner_token": STRING}, ["execution", "owner_token"]),
-    tool("worker_start", "Start the worker for the saved phase: planning=planner (claude, Opus), execution=executor (codex-bf, " + EXECUTION_MODEL + "), review=reviewer (the checkpointed reviewer_backend). Any existing directory works as cwd; use separate worktrees for concurrent writers. Optional model overrides the role default; optional mcp_config (file path or JSON) adds MCP servers to a Claude worker.",
+    tool("worker_start", "Start a worker for the saved phase by purpose: planning=plan or research (planner), execution=code or qa (executor), review=review (reviewer). Backend and model come from the team's route for that purpose (see team_status routes); pass backend or model only to override it. kind defaults from purpose, and purpose from kind (planner=plan, executor=code). Several workers of the phase's role may run at once. Any existing directory works as cwd; use separate worktrees for concurrent writers. Optional model overrides the role default; optional mcp_config (file path or JSON) adds MCP servers to a Claude worker.",
          {"name": STRING, "task": STRING, "backend": {"type": "string", "enum": list(BACKENDS)},
-          "kind": {"type": "string", "enum": ["planner", "executor", "reviewer"]}, "model": STRING,
-          "cwd": STRING, "mcp_config": STRING, "owner_token": STRING}, ["name", "task", "kind", "owner_token"]),
+          "kind": {"type": "string", "enum": ["planner", "executor", "reviewer"]},
+          "purpose": {"type": "string", "enum": list(PURPOSES)}, "model": STRING,
+          "cwd": STRING, "mcp_config": STRING, "owner_token": STRING}, ["name", "task", "owner_token"]),
     tool("agent_send", "Answer or revise a worker by resuming its SAME session. Only between turns.",
          {"agent_id": STRING, "message": STRING, "owner_token": STRING}, ["agent_id", "message", "owner_token"]),
-    tool("team_status", "Inbox: first read returns all workers; later reads return only workers that changed, and only their id, name, status, and changed fields. Empty workers means no changes, not no workers; active counts running workers. Wait up to 30 seconds. Use full=true to recover all summaries. Detailed reports remain at the paths given on first sight.",
+    tool("team_status", "Inbox: first read returns all workers; later reads return only workers that changed, and only their id, name, status, and changed fields. Empty workers means no changes, not no workers; active counts running workers. Wait up to 30 seconds. Use full=true to recover all summaries. Detailed reports remain at the paths given on first sight. A delivered peer report already carries that worker's outcome, so read again after one only to see other workers or a report the event truncated.",
          {"wait_seconds": {"type": "integer", "minimum": 0, "maximum": 30}, "full": {"type": "boolean"}}, []),
     tool("worker_stop", "Stop one of this supervisor's workers; preserve its conversation and files.",
          {"agent_id": STRING, "owner_token": STRING}, ["agent_id", "owner_token"]),
@@ -876,10 +963,7 @@ def dispatch(caller, name, arguments, inbox=None):
     with (ROOT / "control.lock").open("a") as control:
         fcntl.flock(control, fcntl.LOCK_EX)
         if name == "team_takeover":
-            result = team_takeover(caller, **arguments)
-            if inbox is not None:
-                inbox.pop(result["supervisor"]["id"], None)
-            return result
+            return team_takeover(caller, inbox=inbox, **arguments)
         chat = read(caller)
         team_id = chat.get("team_id", caller)
         parent = read(team_id)
@@ -894,17 +978,21 @@ def dispatch(caller, name, arguments, inbox=None):
             raise ValueError("Team is being deleted")
         if name in ("worker_start", "agent_send") and parent.get("execution") != "authorized":
             raise ValueError("Execution is not authorized. Discuss with the user, then save authorization with team_checkpoint.")
+        if name == "worker_start" and not args.get("kind"):
+            args["kind"] = PURPOSES.get(args.get("purpose"), ("executor",))[0]
         if name in ("worker_start", "agent_send"):
             worker = args if name == "worker_start" else owned(team_id, args["agent_id"])
             kind = worker.get("kind", "executor")
             required_phase = {"planner": "planning", "executor": "execution", "reviewer": "review"}.get(kind)
             if parent.get("phase", "planning") != required_phase:
                 raise ValueError("Worker role must match the saved workflow phase: planning, execution, then review")
-            required_backend = {"planner": "claude", "executor": "codex-bf",
-                                "reviewer": parent.get("reviewer_backend")}[kind]
-            backend = worker.get("backend") or required_backend
-            if backend != required_backend:
-                raise ValueError("This role requires backend " + str(required_backend))
+            # Other purposes accept an explicit override; review keeps the user's choice.
+            if name == "worker_start" and kind == "reviewer":
+                required_backend = team_routes(parent).get("review", {}).get("backend")
+                if not required_backend:
+                    raise ValueError("Ask the user to choose the review backend before starting review")
+                if (worker.get("backend") or required_backend) != required_backend:
+                    raise ValueError("This role requires backend " + required_backend)
         if name == "team_start" and team_id != caller:
             session = args.pop("session_id", None)
             if session is not None and session != chat.get("session_id"):
@@ -980,8 +1068,9 @@ def main():
     runner.add_argument("--agent", required=True)
     runner.add_argument("--run", required=True)
     sub.add_parser("snapshot")
+    sub.add_parser("running")
     manage = sub.add_parser("manage")
-    manage.add_argument("operation", choices=("archive", "restore", "delete"))
+    manage.add_argument("operation", choices=("delete",))
     manage.add_argument("--agent", required=True)
     args = parser.parse_args()
     if args.action == "launch":
@@ -995,6 +1084,8 @@ def main():
         supervisor_hook(args.supervisor, args.status)
     elif args.action == "manage":
         print(json.dumps(manage_team(args.agent, args.operation)))
+    elif args.action == "running":
+        print(json.dumps(running()))
     else:
         print(json.dumps(snapshot()))
 

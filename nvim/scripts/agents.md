@@ -1,17 +1,27 @@
 Agent chats use a narrow, two-line sidebar: number and variant on the first
-line, custom title on the second. Rename with `<leader>cR` or `r` in the sidebar.
+line, custom title on the second. Rename with `<leader>cR` or `r` in the sidebar; the name is saved as `name` in
+the chat's state directory and survives restarts.
 
 - `Esc` enters Normal mode in the terminal and leaves the chat open.
 - `Ctrl-g` sends a literal Escape to the agent, in either Terminal or Normal mode.
 - `i` resumes typing into the terminal.
-- `Ctrl-h` in Normal mode focuses the sidebar; `Ctrl-l` returns to the chat.
+- `Ctrl-h` in Normal mode focuses the sidebar in the popup layout; `Ctrl-l` returns to the chat.
 - `j` / `k` select sidebar entries; Enter opens one; `n` creates a chat.
+- `d` in the sidebar asks for confirmation, stops the chat's agent and any workers
+  it started, and removes their saved records and transcripts. Project files,
+  worktrees, branches and the backends' own conversation history stay.
 - `Ctrl-,` toggles the chat workspace; `q` in Normal mode hides it.
 - `<leader>c1` through `<leader>c9` open the corresponding chat.
+- `<leader>c0` opens the next chat that needs you: waiting first, then unread.
+- `<leader>cL` switches chats between the popup and a right-hand panel for this
+  Neovim session. The panel has no sidebar and its winbar shows the name and
+  status; `Ctrl-h` goes to the code window, LazyVim's `Ctrl-l` comes back, `q`
+  hides it.
 
 Status symbols: `●` working, `!` needs approval, `○` ready for input,
-`×` exited, `?` unknown. `*` marks a response that finished while another
-buffer was focused. Opening that chat clears it. Status updates once per second.
+`×` exited, `?` unknown. `*` marks a response that finished while the chat
+was not visible. Opening that chat clears it. Lualine
+shows `!N *N` (waiting / unread) whenever either is non-zero, and nothing when both are zero. Status updates once per second.
 
 Claude status comes from its session registry, matched by the session ID the
 launcher's SessionStart hook records (so it survives `/clear`). The default,
@@ -40,6 +50,13 @@ model processing; delivery failure never changes completed worker work and is
 shown in the worker summary. There is no background retry. Use
 `team_status(full=true)` to recover any report after a failed or missing wakeup;
 stable event IDs make ambiguous repeats recognizable.
+
+An idle session receives a report as a new turn, within about ten seconds. A
+session that is mid-turn does not: Claude Code absorbs the message into the
+running turn as a system reminder (`absorbed_mid_turn`) rather than queueing a
+new one, so a report that lands while the supervisor is working produces no
+wakeup of its own. The supervisor's one nonwaiting `team_status` before it ends
+a turn is what closes that window; the skill requires it for this reason.
 
 The isolated real-client probes are runnable from the `nvim` directory and make
 small real model calls. `claude-capture` is a hook helper, not a standalone
@@ -76,6 +93,11 @@ worker transcripts, and resumable session IDs are stored under
 `~/.local/state/nvim/agent-teams/` (override with `NVIM_TEAM_HOME`). A machine
 restart stops active processes; saved conversations can be resumed.
 
+After quitting Neovim, `<leader>cp` lists chats still running in `nvim-agents`
+but not open here (`↺`, with `(open elsewhere)` if another Neovim is attached).
+Choosing one reattaches to the running agent with its name and backend. Only live
+sessions are listed.
+
 Install the shared skill once for each client (both links use the same source):
 
     ln -s "$HOME/.config/nvim/skills/supervise" "$HOME/.claude/skills/supervise"
@@ -100,26 +122,43 @@ a Bifrost supervisor does not redirect the planner. Keep that Claude account
 logged in; account limits and settings still apply. The planner researches,
 asks the supervisor questions, and saves a detailed plan before implementation.
 
-Executors use `codex-bf --model gpt-5.6-terra` with medium reasoning, explicitly
-selecting the Bifrost provider. This balanced default can be overridden per
-worker; availability depends on the gateway key. No automatic model or billing
-fallback is configured. The planner defaults to Opus; a supported Fable model
-can be passed explicitly. Each worker keeps its role and model on resume.
+Each worker has a purpose, and the team's route for that purpose picks its
+backend and model:
 
-After execution, the supervisor asks whether review should use Bifrost GPT or
-Claude subscription, then starts a separate reviewer. Review findings go back
+| Purpose | Kind | Default backend and model |
+|---|---|---|
+| `plan` | planner | `claude --model opus` |
+| `research` | planner, read-only brief | `claude-bf --model opus` |
+| `code` | executor | `claude --model opus` (`sonnet` when the plan spells out the edits) |
+| `qa` | executor | `claude-bf --model sonnet` |
+| `review` | reviewer | the user's choice |
+
+`claude-bf` workers always get an explicit `--model`, because the wrapper forces
+`ANTHROPIC_MODEL=claude-opus-4-8` otherwise. Through Bifrost, `opus` and
+`sonnet` resolve to `claude-opus-5-5` and `claude-sonnet-5-5`. `codex-bf`
+workers default to `gpt-5.6-terra` with medium reasoning. `team_checkpoint`
+changes a route (`routes={"qa": {"backend": "codex-bf"}}`; `{}` resets it), and
+`worker_start` accepts a one-off `backend` or `model`. Each worker keeps its
+backend and model on resume.
+
+`team_checkpoint(budget="bifrost")` is the budget switch: every route on
+`claude` starts on `claude-bf` from the next worker, without a restart.
+`budget="subscription"` switches back. No automatic billing fallback exists.
+
+After execution, the supervisor asks whether review should use Bifrost GPT,
+Bifrost Claude or Claude subscription, then starts a separate reviewer. Review findings go back
 to executors for fixes and then back to the reviewer. All agents ask the
 supervisor first; it answers from agreed decisions and escalates only unresolved
 questions to you. The tools enforce phase/backend selection and require a
 completed planner plus saved plan before execution. The skill requires review
 findings to be resolved, beyond the tool's completed-review check.
 
-`team_checkpoint` saves `phase`, the absolute `plan_path`, and the chosen
-`reviewer_backend`; `handoff` may be omitted to keep the saved one. Stopping a
+`team_checkpoint` saves `phase`, the absolute `plan_path`, `routes`, `budget`,
+and the chosen `reviewer_backend`; `handoff` may be omitted to keep the saved one. Stopping a
 `done` worker keeps it `done`, and the finish gate compares reviewer and executor
 completion times, so later stops never make a review look stale. Authorization remains separate: planning permission alone
 does not authorize implementation. These fields and worker roles/models survive
-takeover and appear in team summaries. Team rows show planner/executor/reviewer.
+takeover and appear in team summaries.
 
 The supervisor saves a 1–3 paragraph goal in `brief.md` and a short current
 handoff in `handoff.md`, beside the authoritative `agent.json` in the team's
@@ -130,49 +169,22 @@ Assignments, follow-ups, state changes, and full results are also recorded
 automatically in each worker's `activity.jsonl`. The worker record retains its
 current assignment and last report. The supervisor only needs to checkpoint
 decisions, authorization, and next steps, rather than duplicate worker bookkeeping.
-The detail page shows the age of that explicit checkpoint; hooks and takeover
-do not reset its timestamp. An absent timestamp displays as "never".
 
 For a fresh supervisor context, clear the conversation using your client's
 reset command (for example `/clear` in Claude), then invoke
 `/supervise-takeover <team-id>` in Claude or `$supervise-takeover <team-id>` in
 Codex. You can also open a fresh Neovim agent chat and run that command there.
-The team detail page displays both commands with the stable team ID. Takeover
-commands can be copied with `y` from a team or worker row or detail page. The
-command uses the current supervisor's client syntax and goes to the unnamed
-register and, when available, the system clipboard. Both client variants remain
-visible in the detail page if you want to switch clients.
-Takeover preserves workers, transcripts, and planning/authorized/paused state; `i` opens
-the current supervisor. It returns a fresh ownership token and rejects mutations
+The supervisor shows both commands with the stable team ID.
+Takeover preserves workers, transcripts, and planning/authorized/paused state. It returns a fresh ownership token and rejects mutations
 using the old token. This protects team-tool calls, not arbitrary shell activity.
 An already-running worker finishes its current turn normally.
 
-After installing this update, restart Neovim for the view changes and launch a
+After installing this update, launch a
 fresh agent chat for the new MCP tools and Claude SessionStart hook. Exit old
 supervisor processes before the first takeover: MCP servers already running the
 previous code cannot enforce ownership tokens. Subsequent takeovers work with
 the updated tools after a reset or from a new chat. The SessionStart hook records
 Claude's new session ID after `/clear`; Codex supplies `CODEX_THREAD_ID` explicitly.
-
-`<leader>ct` opens the team view. `j/k` select rows, `l` or Enter inspect an
-agent, `h` returns to its parent, `i` opens the supervisor's live chat, and `q`
-closes the view. Worker pages show their transcript and backend errors. Send
-worker instructions through the supervisor, which owns their context. New
-Neovim instances discover saved teams and reattach their supervisor on `i`.
-
-`a` archives the selected team (or restores it from the archive list). Archive
-hides the team without stopping agents or removing history. `A` switches between
-active and archived teams. `d` asks for confirmation, stops the team's supervisor
-and workers, and removes its local team records and transcripts. These actions
-target the whole team even from a worker row. Project files, worktrees, branches,
-and the backends' own conversation history remain intact. If workers cannot be
-stopped, deletion reports an error and retains the team for a retry.
-
-The Agents sidebar has the same `a` (archive) and `d` (delete) keys for its
-selected chat. `A` opens the archived chats/teams list; press `a` there to restore
-an entry or `i` to reopen it. Ordinary chats can also be archived, even before
-they become supervisors. `?` in the sidebar lists all its actions. Archive is a
-way to hide something you might return to; it does not pause or cancel work.
 
 The supervisor gets seven session-scoped MCP tools: `team_start`, `team_takeover`,
 `team_checkpoint`, `worker_start`, `team_status`, `agent_send`, and `worker_stop`.
@@ -186,7 +198,7 @@ running workers. `full=true` recovers the full overview; a server reconnect or
 takeover resets the inbox. Reports and assignments are capped at 1200 characters
 per field with paths to full activity and transcripts. Updates that arrive
 between polls are returned immediately; unchanged running teams wait up to
-30 seconds. The inbox does not alter the durable records or Neovim's full view.
+30 seconds. The inbox does not alter the durable records.
 If only a run ID or report text beyond the display cutoff changed, the compact
 update carries `report_changed`, the new `run_id`, and the detail path.
 Summaries carry `last_error` while a worker is retrying a failed connection or
@@ -194,30 +206,34 @@ API call, and backend exit errors include the last lines of `backend.log`. Every
 tool call's duration is appended to the team's `mcp.log`; Claude Code itself
 backgrounds any tool call past two minutes and delivers it as a notification.
 
-Planners run on `claude`, executors on `codex-bf`, reviewers on the chosen one. They report a structured result, question,
+Workers run on their purpose's route; `team_status` shows the effective
+`routes` and `budget`. `planner_backend` and `reviewer_backend` are shorthands
+for the `plan` and `review` route backends. A reviewer must use the review
+backend the user chose. Several workers of the phase's role may run at once. They report a structured result, question,
 or permission blocker at the end of a turn. A turn ends when the model stops
 calling tools, so an interim message becomes that turn's report. Answering a
 question resumes the same backend session. In polling mode, the supervisor uses
 a 30-second inbox wait while workers are active and must stay in that loop to
 receive updates autonomously. In event mode, the verified Claude peer message
 wakes the idle session; if it does not arrive, tell the supervisor to check its
-team. Opening the UI alone does not send prompts or wake a paused supervisor.
+team.
 
 Codex workers use workspace-write with automatic approval review; Claude
 workers use auto mode and deny requests that would require an interactive
 permission prompt. No approval is converted into a conversational question or
 bypassed. Codex workers pass `--skip-git-repo-check`, so any existing directory
 works as `cwd`; if a Codex plugin's OAuth has expired they report `blocked`, and
-`codex mcp login <server>` followed by `agent_send` resumes them. Claude workers
-accept `mcp_config` (file path or JSON) for extra MCP servers; claude.ai
+`codex mcp login <server>` followed by `agent_send` resumes them (the Codex chat
+launcher logs into Atlassian before each new or resumed Codex process
+and stops if login fails; attaching to a running process skips login). The
+`codex mcp list --json` auth status is `unknown`, so it cannot reliably skip
+login for already-authenticated servers. Claude
+workers accept `mcp_config` (file path or JSON) for extra MCP servers; claude.ai
 connectors are unavailable in headless mode. Workers share the supervisor's directory by default. For concurrent
 writers, the supervisor must supply separate existing worktree directories;
 this version does not create or merge worktrees automatically.
 
-The view shows registered supervisors and their direct workers, not arbitrary
-native subagents launched outside the team tools. Worker output updates as
-backend events arrive. The supervisor's full conversation remains in its
-attached terminal; its team page shows its brief and workers. The Codex skill
+The Codex skill
 registers `CODEX_THREAD_ID` for reconnect after process exit. Lifecycle hooks also
 record session IDs and status when enabled/trusted; otherwise sidebar status may
 be unknown. If its ID is missing after a process exits, the launcher reports the
@@ -226,7 +242,6 @@ problem instead of resuming an unrelated conversation.
 Additional isolated checks (no model calls):
 
     python3 scripts/check-team.py
-    nvim --headless -u NONE -l scripts/check-team-ui.lua
 
 ## Bifrost budget
 

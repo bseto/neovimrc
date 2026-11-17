@@ -19,8 +19,9 @@ map("n", "<C-w><C-l>", "<cmd>vertical resize +4<cr>", { desc = "Increase Window 
 map("n", "<C-w><C-j>", "<cmd>resize -4<cr>", { desc = "Decrease Window Height" })
 map("n", "<C-w><C-k>", "<cmd>resize +4<cr>", { desc = "Increase Window Height" })
 
--- Database UI toggle
-map("n", "<leader>D", "<cmd>DBUI<cr>", { desc = "Open Database UI" })
+-- Database UI lives in lua/plugins/database.lua, keyed off lua/config/db.lua.
+-- Mapping <leader>D directly here would shadow sqmeow's <leader>D* prefix, and
+-- when dadbod is the live client its own extra already maps <leader>D to DBUIToggle.
 
 -- Find Files (cwd) overrides live in lua/plugins/snacks.lua so they win over LazyVim's lazy keys.
 

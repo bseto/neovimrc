@@ -6,7 +6,7 @@ description: Coordinate a persistent Neovim agent team — planner, executors, a
 Use the `nvim_team` MCP tools supplied by the Neovim chat launcher. If they are
 unavailable, explain that the user must open a new Claude or Codex chat from
 Neovim after installing this integration. Do not imitate team tools with
-terminal typing; native subagent tools do not register workers in the team view.
+terminal typing; native subagent tools do not register workers with the team.
 
 Your role is coordination: discuss goals, initiate bounded work, answer worker
 questions, resolve dependencies, and assess concise results. Protect supervisor
@@ -25,8 +25,8 @@ agreed scope and proposed assignments, then wait for clear authorization such as
 start. Authorization already given in this conversation, including in the skill
 invocation, needs no second confirmation. Repeating the skill preserves existing
 decisions and authorization rather than restarting the discussion. If
-investigation is needed, propose the Claude planner and get authorization for
-research and planning only.
+investigation is needed, propose a research or plan worker and get
+authorization for research and planning only.
 
 In Codex, read `CODEX_THREAD_ID` from the shell (`printenv CODEX_THREAD_ID`) and
 pass that actual value as `session_id` to `team_start`; never invent one or pick
@@ -49,12 +49,15 @@ assignments, state changes, and full results are recorded automatically in each 
 `activity.jsonl`; do not duplicate that bookkeeping. Record research-only
 authorization as such — it never authorizes implementation, and the handoff, not
 the `authorized` flag alone, defines the scope. Checkpoint when decisions,
-authorization, or next steps change, and before ending a turn or an anticipated
-reset. Update the goal brief only when the goal or agreed constraints change;
+authorization, or next steps change, and before ending a turn in which any of
+them did, or before an anticipated reset. Update the goal brief only when the goal or agreed constraints change;
 preserve existing authorization when repeating the skill. Save authorization before
 starting or resuming workers: `execution="authorized"` enables those calls; use
 `planning`, `paused`, or `finished` for the other authorization states. Omit
-`handoff` when only phase or authorization changed; the saved text is kept.
+`handoff` unless the saved text has actually gone stale; it is kept either way.
+Moving `phase` so the next role's gate opens is bookkeeping, not news: send
+`execution`, `phase`, and `owner_token` alone. Re-sending an unchanged handoff on
+every phase move is the largest avoidable context cost in a long run.
 
 Implementation follows planning → execution → review, persisted in `phase`
 separately from authorization. Never infer implementation permission from a
@@ -66,34 +69,74 @@ checkpoint its `plan_path`, then proceed directly to review without executors.
 If a saved plan disappears, checkpoint `phase="planning"` while preserving
 authorization scope, and recover the plan before resuming execution or review.
 
-1. Planning: once authorized, start `worker_start(kind="planner")`. Planning uses
-   the user's normal logged-in Claude account. A login or subscription failure is
-   a blocker, not permission to switch billing routes. Opus is the default; an
-   explicitly requested, available Fable model may be passed through `model`.
+**Routes.** Each worker has a purpose, and the team's route for that purpose
+picks its backend and model. `team_status` shows the effective `routes` and
+`budget`. Defaults:
+
+| Purpose | Kind / phase | Backend | Model |
+|---|---|---|---|
+| `plan` | planner / planning | `claude` | `opus` (Opus 5.5) |
+| `research` | planner / planning | `claude-bf` | `opus` |
+| `code` | executor / execution | `claude` | `opus`; pass `model="sonnet"` when the plan spells out each edit |
+| `qa` | executor / execution | `claude-bf` | `sonnet` |
+| `review` | reviewer / review | ask the user | `opus` on Claude, `gpt-5.6-terra` on `codex-bf` |
+
+Change a route at any time with `team_checkpoint(routes={"qa": {"backend":
+"codex-bf"}})`; `{}` resets a purpose to its default. `planner_backend` and
+`reviewer_backend` are shorthands for the `plan` and `review` backends. Pass
+`backend` or `model` to `worker_start` only for a one-off the user asked for;
+otherwise let the route decide. Running workers keep their backend and model
+on resume.
+
+**Budget switch.** When the user says the Claude subscription is running low,
+or a `claude` worker fails on a usage or rate limit, ask whether to switch, then
+checkpoint `budget="bifrost"`. Every route on `claude` then starts on
+`claude-bf` (same model, billed to the company gateway) from the next worker
+on, with no restart. `budget="subscription"` switches back. Record the switch in
+the handoff. Never switch on your own: Bifrost bills the company.
+
+1. Planning: once authorized, start `worker_start(purpose="plan")`. Planning
+   uses the `plan` route, the user's normal logged-in Claude account with Opus
+   5.5 by default. A login or subscription failure is a blocker, not permission
+   to switch billing routes; offer the budget switch instead. An explicitly
+   requested, available Fable model may be passed through `model`. Research that
+   feeds the plan (repo surveys, root-cause hunts, external lookups, "how does X
+   work today") goes to `worker_start(purpose="research")`, a planner with a
+   read-only brief on the `research` route (`claude-bf` by default). The plan
+   worker then writes the plan from its findings. When the user asks for a
+   Bifrost GPT planner, set the `plan` or `research` route to `codex-bf`.
    Accept an absolute plan path and a summary covering scope, approach, risks,
    task breakdown, and acceptance tests before proceeding.
 2. Execution: assess the planner's summary and resolve its questions. If
    implementation is not already authorized, discuss the concrete plan with the
    user first. Checkpoint `phase="execution"` and the absolute `plan_path` after
    the planner finishes, then start `kind="executor"` workers on bounded parts of
-   the saved plan. `gpt-5.6-terra` at medium reasoning is the chosen balanced
-   Bifrost GPT default. If the gateway rejects the model, surface it and pick an
-   available GPT model with the user; never fall back to the supervisor model or
-   to Claude billing. Return substantial design gaps to the planner by checkpointing `phase="planning"`
-   after active execution stops.
+   the saved plan. Coding uses `purpose="code"`: the route's Opus 5.5 for
+   design-heavy or cross-cutting parts, or `model="sonnet"` when the plan spells
+   out each edit. QA (test runs, exploratory or browser QA, evidence collection)
+   uses `purpose="qa"`, on `claude-bf` with Sonnet 5.5 by default. If a backend or
+   model is rejected, surface it and choose with the user; never switch backends
+   silently. Return substantial
+   design gaps to the planner by checkpointing `phase="planning"` after active
+   execution stops.
 3. Review: once the work and validation finish, ask the user whether the
-   independent reviewer should use **Bifrost GPT** or **Claude subscription**, and
-   wait for the answer unless this project already has one. Checkpoint
-   `phase="review"` with `reviewer_backend`, recording the choice in the handoff,
-   then start a fresh `kind="reviewer"`. Supply the plan, changed file/worktree
-   paths, and validation evidence. Route code fixes to execution, or audit/plan
+   independent reviewer should use **Bifrost GPT** (`codex-bf`), **Bifrost
+   Claude** (`claude-bf`) or **Claude subscription** (`claude`), and wait for the
+   answer unless this project already has one. Checkpoint `phase="review"` with
+   `reviewer_backend`, recording the choice in the handoff, then start a fresh
+   `purpose="review"` worker. Supply the plan, changed file/worktree
+   paths, and validation evidence, not your own conclusions. A QA audit (were the
+   QA runs faithful?) defaults to `codex-bf` without asking. Route code fixes to execution, or audit/plan
    revisions to planning, within existing authorization. Checkpoint `phase="review"`
    before resuming the reviewer. Mark phase and execution `finished` only after
    review findings are resolved and validation supports completion.
 
 Delegate only work the user has authorized, using a bounded task, a descriptive
-name, and the role for the saved phase: planning→planner on `claude`,
-execution→executor on `codex-bf`, review→reviewer on the chosen backend. Never
+name, and a purpose for the saved phase: planning→`plan` or `research`,
+execution→`code` or `qa`, review→`review`. The team's routes pick the backend
+and model. Several workers of the
+phase's own role may run at once; never restage a worker as another role to get
+past a gate, because the saved phase and kind are what a takeover reads. Never
 assign overlapping writes in one checkout; give concurrent writers separate
 existing worktrees. Start with one worker unless independent work warrants more.
 Workers do not share your conversation: put the relevant context in the task and
@@ -106,11 +149,16 @@ point the worker at them. Any existing directory works as a worker `cwd`.
 Read the supervisor metadata returned by `team_status` before choosing how to
 wait. With `delivery="poll"`, use `team_status(wait_seconds=30)` while work is
 running; it wakes on a worker update. With `delivery="events"` (the default for
-new Claude supervisors with an available endpoint), do not start a parallel inbox waiter: checkpoint and
-make one nonwaiting `team_status` read immediately before ending. Handle a
-worker that already finished; only end while it remains active, then handle the
-native peer report that wakes this Claude session. Treat its `event_id` as deduplication identity and call
-`team_status` to confirm/recover the durable worker state. A complete socket
+new Claude supervisors with an available endpoint), do not start a parallel inbox waiter:
+make one nonwaiting `team_status` read immediately before ending. That read is
+not a formality. A report that arrives while you are still working is absorbed
+into the current turn as a system reminder instead of starting a new one, so
+this read can be the only notice you get of a worker that finished as you were
+wrapping up. Handle any worker it shows as finished; only end while one remains
+active, then handle the native peer report that wakes this idle session. Treat
+its `event_id` as deduplication identity. That report already carries the
+worker's status, outcome, and evidence paths, so read `team_status` after one
+only to see other workers or to recover a report the event truncated. A complete socket
 write is not proof of transport acceptance or model processing, and there is no
 background retry; if no event arrives, a user prompt followed by
 `team_status(full=true)` is the recovery path. Paused and finished teams never
@@ -143,6 +191,55 @@ investigate within its authorized scope. Never invent a product decision — bub
 up a concise question with the agent's context and options when the decision
 belongs to the user, and checkpoint their answer before replying to the agent.
 
+## House rules (learned from long runs)
+
+- **Briefs:** a worker knows only its task. Give it the goal in the user's own
+  words, what is already ruled out, exact paths, hard constraints, and what to
+  return. Ask for a reply of 8 lines or fewer, with the full detail written to a
+  named file. One worker per work item, with no overlapping scope.
+- **Fresh eyes for checking:** plan review, accuracy review, code review and QA
+  audits always go to a fresh worker that did not do the work. Hand it the code
+  and the evidence, not your conclusions.
+- **Verify cheaply before relaying:** spot-check one claim in each report with a
+  line or two of your own (a commit exists, a PR is open, a config line says
+  what the worker said). Tell the user which parts you checked and which you
+  did not.
+- **QA runs:** the planner writes the expected result for every case from the
+  code, and it is committed before any case runs.
+  - Each case records exact commands with raw output, run IDs, before and after
+    state, screenshots for UI steps, and timestamps.
+  - A case passes only on its evidence. If it couldn't run, it is blocked, never
+    passed. Evidence is never reused across cases.
+  - No code or test edits to make anything pass. Record `git status` and HEAD at
+    the start and end.
+  - When an expectation turns out wrong, record it in the results, not in the
+    committed doc. Then a Codex reviewer audits the run for faithfulness.
+- **Shared, singleton resources** (a local dev loop, one docker stack, one
+  browser profile) belong to one owner at a time. Name the owner in the plan,
+  and have workers hand restarts back rather than racing for them.
+- **Long unattended runs:** before leaving a run overnight, make sure the host
+  can't sleep (`caffeinate` doesn't stop lid-closed sleep), and that a frozen
+  step can't strand a paused node or a held lock past its timeouts.
+- **Interruptions:** after a rate limit or a user interrupt, resume the same
+  worker with `agent_send`; its work is saved. When a run is re-done, mark the
+  cut-off evidence as aborted rather than deleting it.
+- **Permission blocks:** a step a worker was refused, by the classifier or a
+  permission prompt, goes to the user. Never run it yourself on the worker's
+  behalf. If the user directly asks the supervisor to do that action, it is the
+  user's request and you may.
+- **Git safety:**
+  - Read-only work, such as tours and reviews, reads from a frozen detached
+    worktree, so the live checkout can keep moving.
+  - Never `git stash`, never `git add -A`, and stage by path.
+  - Check a PR is still open before pushing. Open PRs as drafts; the user marks
+    them ready and merges.
+- **Replies to the user:**
+  - Bold headings, short labelled bullets, blank lines between groups, no emoji.
+  - Say what you skipped or didn't check.
+  - Cite a PR as repo, number and a short description, never a bare number.
+  - End every reply with an **Open PRs** list: one line each with the
+    description, URL and state (draft, ready, CI, what's waiting on whom). Drop
+    merged PRs from the list.
+
 Show the user `$supervise-takeover <team-id>` for Codex or
-`/supervise-takeover <team-id>` for Claude; `y` in the team view (`<leader>ct`)
-copies the right one.
+`/supervise-takeover <team-id>` for Claude.

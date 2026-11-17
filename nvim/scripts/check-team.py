@@ -165,6 +165,17 @@ else:
     assert team.deliver_worker_report(worker["id"], delivered["run_id"])["socket_write"] == "complete"
     assert len(sent) == 1
     assert "private-token" not in json.dumps(team.snapshot())
+    # A backend failure carries last_error; the saved message is only the log tail.
+    delivered = team.read(worker["id"])
+    delivered.update(run_id=str(uuid.uuid4()), status="error", message="Backend exited with code 1. unrelated OAuth warning",
+                     last_error="could not auto resolve a provider for gpt-6-sol")
+    team.save(delivered)
+    failure = team.deliver_worker_report(worker["id"], delivered["run_id"])
+    assert failure["event_id"].endswith(":failure:1") and failure["socket_write"] == "complete"
+    assert "last_error=could not auto resolve a provider for gpt-6-sol" in sent[-1][1]
+    delivered = team.read(worker["id"])
+    delivered.update(status="done", last_error=None)
+    team.save(delivered)
     # An ambiguous transport failure retains the same event identity for retry.
     delivered = team.read(worker["id"])
     delivered.update(run_id=str(uuid.uuid4()), status="done", message="Retry result")
@@ -282,22 +293,6 @@ else:
     team.save({"id": no_hooks, "role": "chat", "backend": "codex-bf", "cwd": str(root), "created": time.time()})
     team.team_start(no_hooks, "No hooks", "Register directly", session_id=session_id)
     assert team.supervisor_command(team.read(no_hooks), True)[1:3] == ["resume", session_id]
-    plain_chat = str(uuid.uuid4())
-    team.save({"id": plain_chat, "role": "chat", "backend": "claude", "cwd": str(root), "created": time.time()})
-    team.manage_team(plain_chat, "archive")
-    assert team.read(plain_chat)["archived"]
-    team.manage_team(plain_chat, "restore")
-    assert not team.read(plain_chat)["archived"]
-    # Exercise the CLI used by Neovim, including its subcommand dispatch.
-    archived = subprocess.run([sys.executable, str(team.SCRIPT), "manage", "archive", "--agent", worker["id"]],
-                              text=True, capture_output=True, check=True)
-    assert json.loads(archived.stdout)["archived"]
-    assert team.read(supervisor)["archived"]
-    assert team.read(worker["id"])["session_id"] == "test-session"
-    restored = subprocess.run([sys.executable, str(team.SCRIPT), "manage", "restore", "--agent", supervisor],
-                              text=True, capture_output=True, check=True)
-    assert not json.loads(restored.stdout)["archived"]
-    assert not team.read(supervisor)["archived"]
     # Exercise ownership through the same dispatch boundary as MCP, including
     # a fresh chat and a context reset that keeps the same launcher identity.
     token = team.read(supervisor)["owner_token"]
@@ -313,7 +308,8 @@ else:
         "execution": "authorized", "owner_token": token})
     checkpoint_at = team.read(supervisor)["checkpoint_at"]
     rejected(supervisor, "worker_start", {"kind": "executor", "name": "Too early", "task": "Work", "owner_token": token})
-    rejected(supervisor, "worker_start", {"kind": "planner", "backend": "claude-bf", "name": "Wrong route", "task": "Plan", "owner_token": token})
+    rejected(supervisor, "worker_start", {"kind": "executor", "purpose": "research", "name": "Wrong kind", "task": "Plan", "owner_token": token})
+    rejected(supervisor, "worker_start", {"purpose": "code", "name": "Wrong phase", "task": "Work", "owner_token": token})
     planner = team.dispatch(supervisor, "worker_start", {
         "kind": "planner", "name": "Plan color", "task": "Research color and ask about missing decisions.", "owner_token": token})
     assert planner["backend"] == "claude" and planner["model"] == "opus"
@@ -321,6 +317,65 @@ else:
     assert "--mcp-config" in shlex.split(team.worker_command({**planner, "mcp_config": "{}"}, root / "out.json")[2])
     planner_args = shlex.split(team.worker_command(planner, root / "out.json")[2])
     assert planner_args[0] == "claude" and planner_args[planner_args.index("--model") + 1] == "opus"
+    # Planning stays on the user's Claude subscription until they choose otherwise;
+    # a recorded planner_backend then routes later planners to Codex, still kind="planner".
+    rejected(supervisor, "team_checkpoint", {"execution": "authorized", "planner_backend": "gpt", "owner_token": token})
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "planner_backend": "codex-bf", "owner_token": token})
+    second_planner = team.dispatch(supervisor, "worker_start", {
+        "kind": "planner", "name": "Plan color alternative", "task": "Plan an alternative.", "owner_token": token})
+    assert second_planner["kind"] == "planner" and second_planner["backend"] == "codex-bf"
+    assert second_planner["model"] == team.EXECUTION_MODEL
+    assert team.team_status(supervisor)["supervisor"]["routes"]["plan"]["backend"] == "codex-bf"
+    wait(second_planner["id"])
+    team.worker_stop(supervisor, second_planner["id"])
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "planner_backend": "claude", "owner_token": token})
+    # Per-purpose routes: defaults, research as a read-only planner on Bifrost Claude,
+    # the budget switch for the next worker, explicit overrides, and resets.
+    routes = team.team_status(supervisor)["supervisor"]["routes"]
+    assert routes == {"plan": {"backend": "claude", "model": "opus"}, "research": {"backend": "claude-bf", "model": "opus"},
+                      "code": {"backend": "claude", "model": "opus"}, "qa": {"backend": "claude-bf", "model": "sonnet"}}
+    assert team.team_status(supervisor)["supervisor"]["budget"] == "subscription"
+    research = team.dispatch(supervisor, "worker_start", {"purpose": "research", "name": "Survey", "task": "Survey colors.", "owner_token": token})
+    assert research["kind"] == "planner" and research["purpose"] == "research"
+    assert (research["backend"], research["model"]) == ("claude-bf", "opus")
+    research_args = shlex.split(team.worker_command(research, root / "out.json")[2])
+    # The claude-bf wrapper forces ANTHROPIC_MODEL unless --model is passed.
+    assert research_args[0] == "claude-bf" and research_args[research_args.index("--model") + 1] == "opus"
+    wait(research["id"])
+    team.worker_stop(supervisor, research["id"])
+    rejected(supervisor, "team_checkpoint", {"execution": "authorized", "budget": "cheap", "owner_token": token})
+    rejected(supervisor, "team_checkpoint", {"execution": "authorized", "routes": {"deploy": {"backend": "claude"}}, "owner_token": token})
+    rejected(supervisor, "team_checkpoint", {"execution": "authorized", "routes": {"qa": {"backend": "gpt"}}, "owner_token": token})
+    rejected(supervisor, "team_checkpoint", {"execution": "authorized", "routes": {"qa": {"model": "--yolo"}}, "owner_token": token})
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "budget": "bifrost", "owner_token": token})
+    routes = team.team_status(supervisor)["supervisor"]["routes"]
+    assert {route["backend"] for route in routes.values()} == {"claude-bf"}
+    budget_planner = team.dispatch(supervisor, "worker_start", {"kind": "planner", "name": "Budget plan", "task": "Plan.", "owner_token": token})
+    assert (budget_planner["backend"], budget_planner["model"]) == ("claude-bf", "opus")
+    explicit = team.dispatch(supervisor, "worker_start", {"kind": "planner", "backend": "claude", "model": "sonnet",
+                                                          "name": "Explicit plan", "task": "Plan.", "owner_token": token})
+    assert (explicit["backend"], explicit["model"]) == ("claude", "sonnet")
+    for started in (budget_planner, explicit):
+        wait(started["id"])
+        team.worker_stop(supervisor, started["id"])
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "budget": "subscription",
+                                                  "routes": {"qa": {"backend": "codex-bf"}, "code": {"model": "sonnet"}}, "owner_token": token})
+    routes = team.team_status(supervisor)["supervisor"]["routes"]
+    assert routes["plan"]["backend"] == "claude" and routes["code"] == {"backend": "claude", "model": "sonnet"}
+    assert routes["qa"] == {"backend": "codex-bf", "model": team.EXECUTION_MODEL}
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "routes": {"qa": {}, "code": {}}, "owner_token": token})
+    assert team.team_status(supervisor)["supervisor"]["routes"]["qa"] == {"backend": "claude-bf", "model": "sonnet"}
+    assert "qa" not in team.read(supervisor)["routes"]
+    # Pre-routes records keep their recorded choice and move it into routes on the next checkpoint.
+    legacy = team.read(supervisor)
+    legacy.pop("routes")
+    legacy["planner_backend"] = "codex-bf"
+    team.save(legacy)
+    assert team.team_status(supervisor)["supervisor"]["routes"]["plan"]["backend"] == "codex-bf"
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "owner_token": token})
+    assert "planner_backend" not in team.read(supervisor) and team.read(supervisor)["routes"]["plan"] == {"backend": "codex-bf"}
+    team.dispatch(supervisor, "team_checkpoint", {"execution": "authorized", "routes": {"plan": {}}, "owner_token": token})
+    assert team.team_status(supervisor)["supervisor"]["routes"]["plan"]["backend"] == "claude"
     inherited = {"ANTHROPIC_AUTH_TOKEN": "fake", "ANTHROPIC_BASE_URL": "https://invalid.example",
                  "CLAUDE_CONFIG_DIR": "/fake/bifrost", "BIFROST_API_KEY": "fake", "CLAUDE_CODE_USE_BEDROCK": "1"}
     original_env = {key: os.environ.get(key) for key in inherited}
@@ -342,10 +397,16 @@ else:
     team.dispatch(supervisor, "team_checkpoint", {"handoff": "User approved color only; review next.", "execution": "authorized",
         "phase": "execution", "plan_path": str(plan), "owner_token": token})
     checkpoint_at = team.read(supervisor)["checkpoint_at"]
-    rejected(supervisor, "worker_start", {"kind": "executor", "backend": "claude", "name": "Wrong executor", "task": "Work", "owner_token": token})
-    rejected(supervisor, "worker_start", {"kind": "executor", "name": "Codex servers", "task": "Work", "mcp_config": "{}", "owner_token": token})
+    rejected(supervisor, "worker_start", {"kind": "executor", "backend": "codex-bf", "name": "Codex servers", "task": "Work", "mcp_config": "{}", "owner_token": token})
+    coder = team.dispatch(supervisor, "worker_start", {"kind": "executor", "name": "Code color", "task": "Implement blue.", "owner_token": token})
+    assert (coder["backend"], coder["model"], coder["purpose"]) == ("claude", "opus", "code")
+    qa = team.dispatch(supervisor, "worker_start", {"purpose": "qa", "name": "QA color", "task": "Check blue.", "owner_token": token})
+    assert (qa["kind"], qa["backend"], qa["model"]) == ("executor", "claude-bf", "sonnet")
+    for started in (coder, qa):
+        wait(started["id"])
+        team.worker_stop(supervisor, started["id"])
     active_worker = team.dispatch(supervisor, "worker_start", {
-        "kind": "executor", "name": "Running during takeover", "task": "STOP_TEST", "owner_token": token})
+        "kind": "executor", "backend": "codex-bf", "name": "Running during takeover", "task": "STOP_TEST", "owner_token": token})
     assert active_worker["backend"] == "codex-bf" and active_worker["model"] == team.EXECUTION_MODEL
     executor_args = shlex.split(team.worker_command(active_worker, root / "out.json")[2])
     assert executor_args[executor_args.index("--model") + 1] == team.EXECUTION_MODEL
@@ -378,9 +439,14 @@ else:
     assert team.read(worker["id"])["parent"] == supervisor
     assert team.read(worker["id"])["session_id"] == "test-session"
     reset_session = str(uuid.uuid4())
-    reset = team.dispatch(successor, "team_takeover", {"team_id": supervisor, "session_id": reset_session})
+    reset_inbox = {}
+    reset = team.dispatch(successor, "team_takeover", {"team_id": supervisor, "session_id": reset_session}, inbox=reset_inbox)
     assert reset["owner_token"] != successor_token
     assert team.read(successor)["session_id"] == reset_session
+    # Takeover already returned every worker in full, so it seeds the inbox: the new
+    # owner's next read is a diff, not a second copy of the assignments it just read.
+    assert any("assignment" in row for row in reset["workers"])
+    assert not any("assignment" in row for row in team.dispatch(successor, "team_status", {}, inbox=reset_inbox)["workers"])
     rejected(successor, "agent_send", {"agent_id": worker["id"], "message": "Stale", "owner_token": successor_token})
     team.dispatch(successor, "team_checkpoint", {"handoff": "Paused at user's request.", "execution": "paused", "owner_token": reset["owner_token"]})
     paused = team.dispatch(successor, "team_takeover", {"team_id": supervisor, "session_id": str(uuid.uuid4())})
@@ -436,19 +502,53 @@ else:
     # preserves the mode of the already-running process. No real tmux/model calls.
     with patch.dict(os.environ):
         os.environ.pop("NVIM_TEAM_DELIVERY", None)
-        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1)), \
-                patch.object(team.os, "execvp"):
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1)) as launch_tmux, \
+                patch.object(team.os, "execvp"), patch.object(team, "ensure_mcp_login") as login:
             for backend, expected in (("claude", "events"), ("claude-bf", "events"), ("codex-bf", "poll")):
                 chat_id = str(uuid.uuid4())
                 team.launch(backend, chat_id)
                 assert team.read(chat_id)["delivery"] == expected
+                assert [call.args[0] for call in login.call_args_list] == (list(team.CODEX_OAUTH_PLUGINS) if backend == "codex-bf" else [])
+                launch_tmux.assert_called_with("set-option", "-t", team.session_name(chat_id), "mouse", "on", check=True)
             os.environ["NVIM_TEAM_DELIVERY"] = "poll"
             chat_id = str(uuid.uuid4())
             team.launch("claude", chat_id)
             assert team.read(chat_id)["delivery"] == "poll"
         os.environ.pop("NVIM_TEAM_DELIVERY")
-        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0)), \
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0)) as launch_tmux, \
                 patch.object(team.os, "execvp"):
             team.launch("claude", chat_id)
             assert team.read(chat_id)["delivery"] == "poll"
+            launch_tmux.assert_called_with("set-option", "-t", team.session_name(chat_id), "mouse", "on", check=True)
+            assert "new-session" not in [call.args[0] for call in launch_tmux.call_args_list]
+    with patch.object(team.shutil, "which", return_value="codex"), \
+            patch.object(team.subprocess, "run") as run:
+        team.ensure_mcp_login("atlassian-rovo")
+        run.assert_called_once_with(["codex", "mcp", "login", "atlassian-rovo"], check=True)
+
+    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1)) as launch_tmux, \
+            patch.object(team.os, "execvp") as attach, \
+            patch.object(team.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "codex")):
+        chat_id = str(uuid.uuid4())
+        try:
+            team.launch("codex-bf", chat_id)
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            raise AssertionError("Failed login must stop launch")
+        assert not (team.directory(chat_id) / "agent.json").exists()
+        assert [call.args[0] for call in launch_tmux.call_args_list] == ["has-session"]
+        attach.assert_not_called()
+
+    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0)), \
+            patch.object(team.os, "execvp"), patch.object(team, "ensure_mcp_login") as login:
+        team.launch("codex-bf", codex_id)
+        login.assert_not_called()
+    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess(
+            [], 0, stdout=f"{team.session_name(codex_id)} 1\nunrelated 0\n")):
+        rows = team.running()
+        assert [row["id"] for row in rows] == [codex_id] and rows[0]["attached"] == 1
+        assert set(rows[0]) == {"id", "backend", "name", "role", "cwd", "created", "attached"}
+    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1, stdout="")):
+        assert team.running() == []
 print("Team question/resume, ownership, stop, malformed output, MCP, and persistence checks passed")

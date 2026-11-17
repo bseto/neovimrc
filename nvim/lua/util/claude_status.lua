@@ -13,6 +13,10 @@ local function read(path)
   return content
 end
 
+function M.home()
+  return vim.env.NVIM_TEAM_HOME or (vim.fn.expand("~") .. "/.local/state/nvim/agent-teams")
+end
+
 function M.poll(chats, callback, done)
   local by_id = {}
   for _, directory in ipairs({ vim.env.CLAUDE_CONFIG_DIR or vim.fn.expand("~/.claude"), vim.fn.expand("~/.claude-personal") }) do
@@ -23,7 +27,7 @@ function M.poll(chats, callback, done)
       end
     end
   end
-  local home = vim.env.NVIM_TEAM_HOME or (vim.fn.expand("~") .. "/.local/state/nvim/agent-teams")
+  local home = M.home()
   for _, chat in ipairs(chats) do
     if vim.api.nvim_buf_is_valid(chat.buf) then
       local state = "unknown"
