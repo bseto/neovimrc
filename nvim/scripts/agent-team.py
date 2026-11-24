@@ -1156,19 +1156,19 @@ def chat_send(caller, messages):
 
 OPTION = re.compile(r"^(?:❯\s*)?(\d)\.\s+(.+?)\s*$")
 # Backstop for Byron's hard stops: a "Yes" to these prompts goes to Byron, whatever the commander decides.
-HARD_STOP = re.compile(r"\bgit\s+push\b|\bgh\s+pr\s+(merge|ready)\b|\b(terraform|tofu)\s+(plan|apply)\b|\batmos\s+terraform\b"
+HARD_STOP = re.compile(r"\bgh\s+pr\s+(merge|ready)\b|\b(terraform|tofu)\s+(plan|apply)\b|\batmos\s+terraform\b"
                        r"|\brm\s|\bgit\s+branch\s+-D\b|\bkubectl\s+delete\b|\bdelete-|slack"
                        r"|\beval\b|base64|\b(ba|z)?sh\s+-c\b|\|\s*(ba|z)?sh\b", re.I)
 
 
 def pending_tools(chat):
-    """Inputs of the chat's tool calls that have no result yet. Reads the whole transcript: a tail could cut the newest call."""
+    """The chat's tool calls that have no result yet, as {name, input, cwd}. Reads the whole transcript: a tail could
+    cut the newest call. cwd is the chat's directory when the call was made."""
     path = transcript_path(chat)
     if not path:
         return []
-    lines = path.read_text(errors="replace").splitlines()
     pending = {}
-    for line in lines:
+    for line in path.read_text(errors="replace").splitlines():
         try:
             row = json.loads(line)
         except ValueError:
@@ -1176,24 +1176,150 @@ def pending_tools(chat):
         content = row.get("message", {}).get("content") if isinstance(row, dict) else None
         for block in content if isinstance(content, list) else []:
             if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
-                pending[block["id"]] = block.get("input")
+                pending[block["id"]] = {"name": block.get("name"), "input": block.get("input"),
+                                        "cwd": row.get("cwd") or chat.get("cwd")}
             elif isinstance(block, dict) and block.get("type") == "tool_result":
                 pending.pop(block.get("tool_use_id"), None)
     return list(pending.values())
 
 
-def is_hard_stop(block, calls):
-    """Search the dialog and every string in the pending calls, with whitespace and control characters as spaces."""
-    def strings(value):
-        if isinstance(value, str):
-            yield value
-        elif isinstance(value, dict):
-            for item in value.values():
-                yield from strings(item)
-        elif isinstance(value, list):
-            for item in value:
-                yield from strings(item)
-    return any(HARD_STOP.search(re.sub(r"[\s\x00-\x1f\x7f]+", " ", text)) for text in strings([block, calls]))
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
+GIT_PUSH = re.compile(r"\bgit\b[^;&|\n]*\bpush\b")
+GH_COMMENT = re.compile(r"\bgh\b[^;&|\n]*\bcomment\b")
+TERRATEAM_PLAN = re.compile(r"terrateam plan(?: [A-Za-z0-9_-]+:[A-Za-z0-9_./*,-]+)*", re.I)
+PUSH_FLAGS = {"-u", "--set-upstream"}
+
+
+def run_in(cwd, *command):
+    return subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=20)
+
+
+def segments(command):
+    """The simple commands of a shell command, split at ; & | and newlines. None when it does not parse."""
+    out = []
+    for line in command.split("\n"):  # only newline ends a command; splitlines() would also split at \x0b, \x0c, ...
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return None
+        current = []
+        for token in tokens:
+            if token and set(token) <= set(";&|"):
+                if current:
+                    out.append(current)
+                current = []
+            else:
+                current.append(token)
+        if current:
+            out.append(current)
+    return out
+
+
+def push_problem(tokens, cwd):
+    """None when `git push ...` goes to a branch with an open PR: not main/master, no force, no delete."""
+    if tokens[:2] != ["git", "push"]:
+        return "git push must be a plain `git push ...` command"
+    flags = [t for t in tokens[2:] if t.startswith("-")]
+    args = [t for t in tokens[2:] if not t.startswith("-")]
+    if set(flags) - PUSH_FLAGS:
+        return "push options other than -u (force, delete, all, tags, ...) go to Byron"
+    if any(not re.fullmatch(r"[A-Za-z0-9_./:+-]+", a) for a in args):
+        return "unexpected git push argument"
+    remote, refspecs = (args[0], args[1:]) if args else ("origin", [])
+    if remote != "origin":
+        return "push to a remote other than origin"
+    current = run_in(cwd, "git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    for spec in refspecs or ["HEAD"]:
+        if spec.startswith("+"):
+            return "force push"
+        source, colon, target = spec.partition(":")
+        if colon and not source:
+            return "deleting a remote branch"
+        branch = (target or source).removeprefix("refs/heads/")
+        branch = current if branch == "HEAD" else branch
+        if not branch or branch == "HEAD" or branch in ("main", "master"):
+            return f"push to {branch or 'an unknown branch'}"
+        listed = run_in(cwd, "gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "1")
+        try:
+            has_pr = listed.returncode == 0 and bool(json.loads(listed.stdout))
+        except ValueError:
+            has_pr = False
+        if not has_pr:
+            return f"branch {branch} has no open PR"
+    return None
+
+
+def comment_problem(tokens):
+    """None for `gh pr comment <pr> --body "terrateam plan ..."` (a Terrateam plan on the PR)."""
+    if tokens[:3] != ["gh", "pr", "comment"]:
+        return "only a `gh pr comment` with a Terrateam plan can be approved"
+    rest, body, positional, i = tokens[3:], None, [], 0
+    while i < len(rest):
+        token = rest[i]
+        if token in ("--body", "-b", "--repo", "-R") and i + 1 < len(rest):
+            body = rest[i + 1] if token in ("--body", "-b") else body
+            i += 2
+        elif token.startswith("--body="):
+            body, i = token.split("=", 1)[1], i + 1
+        elif token.startswith("-"):
+            return f"gh pr comment option {token} goes to Byron"
+        else:
+            positional.append(token)
+            i += 1
+    if len(positional) > 1 or body is None or not TERRATEAM_PLAN.fullmatch(body.strip()):
+        return "only a 'terrateam plan' comment can be approved"
+    return None
+
+
+def hard_stop_reason(block, calls):
+    """Why a Yes would start a hard stop, or None. Allowed: a git push to a branch with an open PR (never main/master,
+    never forced) and a 'terrateam plan' PR comment. Whitespace and control characters count as spaces."""
+    flat = lambda text: re.sub(r"[\s\x00-\x1f\x7f]+", " ", text)
+    if any(HARD_STOP.search(flat(t)) for t in strings([block, [c["input"] for c in calls]])):
+        return "a hard stop (merge, ready, terraform/tofu plan/apply, delete, Slack or a hidden command)"
+    approved_push = False
+    for call in calls:
+        command = call["input"].get("command") if call["name"] == "Bash" and isinstance(call["input"], dict) else None
+        if not isinstance(command, str):
+            if any(GIT_PUSH.search(flat(t)) or GH_COMMENT.search(flat(t)) for t in strings(call["input"])):
+                return "git push or gh comment outside a shell command"
+            continue
+        parsed = segments(command)
+        risky = GIT_PUSH.search(command) or GH_COMMENT.search(command)
+        if risky and (parsed is None or re.search(r"\$\(|`|<\(", command)):
+            return "git push or gh comment inside a command that cannot be checked"
+        for tokens in parsed or []:
+            if any(re.search(r"(git|gh)[\x00-\x20\x7f]+(push|pr|comment)", t) for t in tokens):
+                return "git push or gh comment hidden inside one shell word"
+            names = [os.path.basename(t) for t in tokens]
+            if "git" in names and "push" in tokens[names.index("git") + 1:]:
+                if names.index("git") != 0 or "cd" in [p[0] for p in parsed if p]:
+                    return "git push must be a plain `git push ...` command, with no cd"
+                problem = push_problem(tokens, call["cwd"])
+                if problem:
+                    return problem
+                approved_push = True
+            if "gh" in names and "comment" in tokens[names.index("gh") + 1:]:
+                if names.index("gh") != 0:
+                    return "gh comment must be a plain `gh pr comment ...` command"
+                problem = comment_problem(tokens)
+                if problem:
+                    return problem
+    if GIT_PUSH.search(flat(block)) and not approved_push:
+        return "the dialog shows a git push that the transcript does not explain"
+    return None
 
 
 def dialog_options(raw):
@@ -1241,8 +1367,9 @@ def chat_answer(caller, chat_id, chat_name, option):
             calls = pending_tools(target)
             if not calls:
                 raise ValueError("Cannot read the pending tool call from the chat's transcript; ask Byron")
-            if is_hard_stop(block, calls):
-                raise ValueError("This prompt is a hard stop (push, merge, plan/apply, delete, Slack or a hidden command); ask Byron")
+            reason = hard_stop_reason(block, calls)
+            if reason:
+                raise ValueError(f"Not approved: {reason}; ask Byron")
         rate_check(caller, target["id"], per_chat=False)
         time.sleep(1)  # second read: the same dialog must still be up
         again = resolve_chat(caller, target["id"], exact=True)
@@ -1608,7 +1735,7 @@ COMMANDER_TOOLS = [
          {"messages": {"type": "array", "minItems": 1, "maxItems": MAX_ITEMS, "items": {
              "type": "object", "properties": {"chat_id": STRING, "chat_name": STRING, "text": STRING},
              "required": ["chat_id", "chat_name", "text"], "additionalProperties": False}}}, ["messages"]),
-    tool("chat_answer", "Press one option of the permission dialog in a Claude chat whose state is waiting. Read the dialog first with chat_read source=screen. option is the number shown before the label. Only the one-time 'Yes' or a 'No' option can be chosen. Refuses a Yes to hard-stop prompts (git push, gh pr merge/ready, terraform/tofu plan/apply, rm, deletes, Slack, eval/base64/sh -c), checked against the full pending tool call in the transcript; also refuses a changed dialog, copy mode and rate limits. Every answer is logged.",
+    tool("chat_answer", "Press one option of the permission dialog in a Claude chat whose state is waiting. Read the dialog first with chat_read source=screen. option is the number shown before the label. Only the one-time 'Yes' or a 'No' option can be chosen. A Yes is allowed for a git push to a branch with an open PR (never main/master, never forced) and a 'terrateam plan' PR comment; it is refused for other hard stops (gh pr merge/ready, terraform/tofu plan/apply, rm, deletes, Slack, other PR comments, eval/base64/sh -c), checked against the full pending tool call in the transcript; also refuses a changed dialog, copy mode and rate limits. Every answer is logged.",
          {"chat_id": STRING, "chat_name": STRING, "option": {"type": "integer", "minimum": 1, "maximum": 9}},
          ["chat_id", "chat_name", "option"]),
     tool("goal_save", "Replace the saved list of Byron's active goals. Call it whenever a goal starts, changes or ends. The list survives a commander restart.",

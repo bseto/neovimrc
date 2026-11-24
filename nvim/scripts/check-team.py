@@ -848,16 +848,53 @@ else:
         assert "No option 5" in answer(5)["reason"]
         assert "pending tool call" in answer(1)["reason"]  # no pending call in the transcript: refuse
         push = pending("git push origin main && printf 'format=B' > notes.txt")
-        assert "hard stop" in answer(1)["reason"]  # the screen shows only the tail; the transcript has the push
+        assert "push to main" in answer(1)["reason"]  # the screen shows only the tail; the transcript has the push
         finish(push)
-        for hidden in ("git\tpush origin main", "git\npush origin main", "printf x; git\x0bpush"):
-            call = pending(hidden)
-            assert "hard stop" in answer(1)["reason"], hidden  # tabs, newlines and control characters count as spaces
-            finish(call)
+        # git push: allowed to a branch with an open PR; never main/master, forced, deleting or hidden
+        prs = {"feature-x": '[{"number": 7}]', "no-pr": "[]"}
+
+        def run_in(cwd, *command):
+            out = "feature-x" if command[:2] == ("git", "rev-parse") else prs.get(command[4], "[]")
+            return subprocess.CompletedProcess(command, 0, stdout=out)
+
+        with patch.object(team, "run_in", run_in):
+            def approve(command, screen_text=None):
+                log.write_text("")
+                registry("A", sa, "waiting")
+                screens[ids["A"]] = perm.replace("printf 'format=B' > notes.txt", screen_text or command[:60])
+                call = pending(command)
+                result = answer(1)
+                finish(call)
+                return result
+
+            for allowed in ("git push origin feature-x", "git push", "git push -u origin HEAD",
+                            "git push origin feature-x:feature-x", 'gh pr comment 12 --body "terrateam plan"',
+                            "gh pr comment 12 -b 'terrateam plan dir:terraform/x workspace:default'",
+                            'git commit -m "fix consumer" && git push origin feature-x'):
+                assert approve(allowed)["result"] == "answered", (allowed, approve(allowed))
+            for refused_command, why in (
+                    ("git push origin no-pr", "no open PR"), ("git push origin main", "push to main"),
+                    ("git push origin HEAD:master", "push to master"), ("git push -f origin feature-x", "options"),
+                    ("git push --force-with-lease", "options"), ("git push origin +feature-x", "force push"),
+                    ("git push origin :feature-x", "deleting"), ("git push --delete origin feature-x", "options"),
+                    ("git push upstream feature-x", "other than origin"), ("git -c a=b push origin feature-x", "plain"),
+                    ("/usr/bin/git push origin main", "plain"), ("xargs git push origin feature-x", "plain"),
+                    ("echo $(git push origin feature-x)", "cannot be checked"), ("cd /tmp && git push origin feature-x", "no cd"),
+                    ("git\tpush origin main", "push to main"), ("printf x; git\x0bpush", "one shell word"),
+                    ('gh pr comment 12 --body "terrateam apply"', "terrateam plan"),
+                    ('gh pr comment 12 --body "terrateam plan; terrateam apply"', "terrateam plan"),
+                    ('gh pr comment 12 --body "lgtm"', "terrateam plan"), ("gh pr comment 12 --body-file x", "option"),
+                    ("gh pr ready 12", "hard stop"), ("gh pr merge 12", "hard stop"), ("terraform plan", "hard stop"),
+                    ("tofu apply", "hard stop")):
+                result = approve(refused_command)
+                assert result["result"] == "refused" and why in result["reason"], (refused_command, result)
+            # the screen shows a push the transcript does not explain
+            assert "does not explain" in approve("printf ok > notes.txt", "git push origin main")["reason"]
+        pending("printf 'format=B' > notes.txt")
         pending("printf 'format=B' > notes.txt")
         screens[ids["A"]] = perm.replace("1. Yes", "1. Yes, and auto-accept edits")
         assert "one-time Yes" in answer(1)["reason"]
-        screens[ids["A"]] = perm.replace("printf 'format=B' > notes.txt", "git push origin main")
+        screens[ids["A"]] = perm.replace("printf 'format=B' > notes.txt", "gh pr merge 12")
         assert "hard stop" in answer(1)["reason"]
         assert answer(3)["result"] == "answered"  # declining a hard stop is fine
         log.write_text("")
