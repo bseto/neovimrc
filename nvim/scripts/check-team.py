@@ -661,9 +661,11 @@ else:
             screens[target] = typed(screens["paste"])
         elif args[0] == "load-buffer":
             screens["paste"] = kwargs["input"]
-        elif args[0] == "send-keys" and args[-1] == "Enter":
+        elif args[0] == "send-keys" and (args[-1] == "Enter" or args[-1].isdigit()):
             rows["A"]["status"] = "busy"
             (team.CLAUDE_DIR / "sessions/A.json").write_text(json.dumps(rows["A"]))
+            if args[-1].isdigit():
+                screens[ids["A"]] = idle_screen
         return subprocess.CompletedProcess(args, 0, stdout=out)
 
     def refused(items, reason, **kw):
@@ -740,7 +742,7 @@ else:
         registry("A", sa)
         registry("A2", sa)
         assert [c["state"] for c in team.live_chats(ids["C"]) if c["id"] == ids["A"]] == ["unknown"]
-        refused(send("A", "hello"), "only idle chats")
+        refused(send("A", "hello"), "only chats whose turn is done")
         (team.CLAUDE_DIR / "sessions/A2.json").unlink()
         registry("A", sa)
         seen = team.seen_text[:]
@@ -810,6 +812,61 @@ else:
         refused(send("A", "hello"), "plain idle layout")
         screens[ids["A"]] = idle_screen.replace("⏵⏵ auto mode on (shift+tab to cycle)", "⏸ manual mode on")
         assert team.chat_send(ids["C"], send("A", "Manual mode is fine"))["results"][0]["result"] == "sent"
+        # shell (turn done, a background shell or agent still runs) is accepted, with agent rows under the footer;
+        # a running turn is still refused
+        log.write_text("")
+        registry("A", sa, "shell")
+        rows_below = "  ⏺ main\n" + "".join(f"  ◯ general-purpose  waiting on 1 shell · task {n}\n" for n in range(6))
+        screens[ids["A"]] = idle_screen + rows_below
+        result = team.chat_send(ids["C"], send("A", "Background work is fine"))["results"][0]
+        assert result["result"] == "sent" and result["confirmed"] is True, result
+        log.write_text("")
+        registry("A", sa, "busy")
+        refused(send("A", "hello"), "working")
+        # chat_answer: a one-time option on a waiting chat; refuses standing options, a Yes to hard stops, idle chats
+        perm = ("out\n Bash command\n   printf 'format=B' > notes.txt\n Do you want to proceed?\n ❯ 1. Yes\n"
+                "   2. Yes, and don't ask again for printf commands in /work\n"
+                "   3. No, and tell Claude what to do differently (esc)\n Esc to cancel\n")
+        assert team.dialog_options(perm)[1] == {1: "Yes", 2: "Yes, and don't ask again for printf commands in /work",
+                                               3: "No, and tell Claude what to do differently (esc)"}
+        answer = lambda option: team.chat_answer(ids["C"], ids["A"], "alpha", option)
+        log.write_text("")
+        registry("A", sa, "waiting")
+        screens[ids["A"]] = perm
+        assert "stop future prompts" in answer(2)["reason"]
+        assert "No option 5" in answer(5)["reason"]
+        screens[ids["A"]] = perm.replace("printf 'format=B' > notes.txt", "git push origin main")
+        assert "hard stop" in answer(1)["reason"]
+        assert answer(3)["result"] == "answered"  # declining a hard stop is fine
+        log.write_text("")
+        registry("A", sa, "waiting")
+        screens[ids["A"]] = perm
+        calls.clear()
+        result = answer(1)
+        assert result["result"] == "answered" and result["confirmed"] and result["label"] == "Yes", result
+        assert ("send-keys", "-t", "%" + ids["A"], "1") in calls
+        assert json.loads(log.read_text().splitlines()[-1])["tool"] == "chat_answer"
+        # a status icon that changes between the two reads is not a changed prompt
+        assert team.dialog_key(*team.dialog_options("⏺ Bash\n" + perm)) == team.dialog_key(*team.dialog_options("✻ Bash\n" + perm))
+        assert team.dialog_key(*team.dialog_options(perm)) != team.dialog_key(*team.dialog_options(perm.replace("notes", "other")))
+        # answers skip the per-chat 30 s rule and do not count toward it: answer twice, then send, all at once
+        registry("A", sa, "waiting")
+        screens[ids["A"]] = perm
+        assert answer(1)["result"] == "answered"
+        registry("A", sa)
+        assert team.chat_send(ids["C"], send("A", "Thanks, carry on"))["results"][0]["result"] == "sent"
+        registry("A", sa)
+        assert "only a chat waiting" in answer(1)["reason"]
+        # goals survive in a file under the team home
+        assert team.goal_load(ids["C"]) == {"goals": []}
+        team.goal_save(ids["C"], [{"title": "Ship X", "owner": "alpha", "next": "review"}])
+        assert team.goal_load(ids["C"])["goals"][0]["owner"] == "alpha"
+        for bad in ([{"owner": "x"}], [{"title": "x", "extra": "y"}], [{"title": "x" * 201}], [{"title": "t"}] * 21):
+            try:
+                team.goal_save(ids["C"], bad)
+                raise AssertionError(bad)
+            except ValueError:
+                pass
         log.write_text("")
         registry("A", sa)
         screens[ids["A"]] = idle_screen
@@ -899,7 +956,7 @@ else:
                               env={**os.environ, "NVIM_TEAM_HOME": str(team.ROOT), "NVIM_TEAM_TMUX": "cmdtest-none"}) as server:
             out, _ = server.communicate(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n", timeout=20)
         return [t["name"] for t in json.loads(out.splitlines()[0])["result"]["tools"]]
-    assert tool_names("--commander", caller=ids["C"]) == ["chat_list", "chat_read", "chat_send"]
+    assert tool_names("--commander", caller=ids["C"]) == ["chat_list", "chat_read", "chat_send", "chat_answer", "goal_save", "goal_load"]
     assert "chat_send" not in tool_names(caller=ids["C"]) and len(tool_names(caller=ids["A"])) == 7
     try:
         team.dispatch(ids["A"], "chat_list", {})
@@ -933,7 +990,8 @@ else:
     # launch settings for the commander: restricted tools, ask rule, prompt file, MCP flag
     command = team.supervisor_command(team.read(ids["C"]), False)
     settings = json.loads(command[command.index("--settings") + 1])
-    assert "ask" not in settings["permissions"] and "mcp__nvim_team__chat_send" in settings["permissions"]["allow"]
+    assert "ask" not in settings["permissions"] and {"mcp__nvim_team__" + n for n in
+        ("chat_list", "chat_read", "chat_send", "chat_answer", "goal_save", "goal_load")} == set(settings["permissions"]["allow"])
     assert {"Bash", "Write", "Edit", "Monitor", "Agent", "WebFetch", "WebSearch", "SendMessage"} <= set(settings["permissions"]["deny"])
     assert command[command.index("--tools") + 1] == "Skill,ToolSearch" and "--strict-mcp-config" in command
     assert Path(command[command.index("--append-system-prompt-file") + 1]).is_file()

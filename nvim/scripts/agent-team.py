@@ -138,8 +138,7 @@ def supervisor_command(record, exists):
         if record.get("role") == "commander":
             server["args"].append("--commander")
             # Byron asked for sends without a dialog (2026-11-24); the send guards in chat_send still apply.
-            settings["permissions"] = {"allow": ["mcp__nvim_team__chat_list", "mcp__nvim_team__chat_read",
-                                                 "mcp__nvim_team__chat_send"],
+            settings["permissions"] = {"allow": ["mcp__nvim_team__" + name for name in sorted(COMMANDER_NAMES)],
                                        "deny": ["Bash", "Write", "Edit", "NotebookEdit", "Monitor", "Agent", "Task",
                                                 "WebFetch", "WebSearch", "SendMessage"]}
             # No Read: raw transcripts would bypass the copy check, which sees only text read through chat_read/chat_list.
@@ -768,6 +767,8 @@ def send_claude_event(endpoint, message):
 SGR = re.compile(r"\x1b\[([0-9;:]*)m")
 RULE = re.compile(r"^[─━]{20,}\s*$")
 DIALOG = re.compile(r"Do you want to|Would you like to|Esc to cancel|Enter to confirm|❯\s*\d+\.", re.M)
+TURN_DONE = ("idle", "shell")  # shell: the turn ended, but a background shell or agent still runs
+AGENT_ROW = re.compile(r"^\s*[⏺◯●○]\s")  # background-agent rows Claude lists under the footer
 NON_DIALOG = re.compile(r"How is Claude doing|session transcript|\d: (Bad|Fine|Good)|0: Dismiss", re.I)
 # Bypass mode is left out on purpose: those chats are never sent to. Claude does not record the mode in its registry.
 IDLE_FOOTER = re.compile(r"^\s*(⏵⏵|⏸) (auto mode|accept edits|plan mode|manual mode) on\b")
@@ -969,18 +970,20 @@ def check_text(text):
     return text
 
 
-def rate_check(caller, chat_id):
+def rate_check(caller, chat_id, per_chat=True):
+    """10 actions (sends and answers) per 5 minutes; with per_chat, also 1 send per chat per 30 s.
+    Answers skip the per-chat rule and do not count toward it: a prompt often follows a send within seconds."""
     now, sent = time.time(), []
     try:
         for line in (directory(caller) / "commander.log").read_text().splitlines():
             row = json.loads(line)
-            if row.get("result") == "sent" and row["time"] > now - 300:
+            if row.get("result") in ("sent", "answered") and row["time"] > now - 300:
                 sent.append(row)
     except (OSError, ValueError):
         pass
     if len(sent) >= 10:
         raise ValueError("Rate limit: 10 sends per 5 minutes")
-    if any(row.get("chat_id") == chat_id and row["time"] > now - 30 for row in sent):
+    if per_chat and any(row.get("chat_id") == chat_id and row["result"] == "sent" and row["time"] > now - 30 for row in sent):
         raise ValueError("Rate limit: 1 send per chat per 30 s")
 
 
@@ -1001,15 +1004,15 @@ def idle_layout(lines):
     rules = [i for i, line in enumerate(lines) if RULE.match(line)]
     above = [line for line in lines[:rules[-2]] if line.strip()][-8:]
     footer = [line for line in lines[rules[-1] + 1:] if line.strip()]
-    return (not NON_DIALOG.search("\n".join(above + footer)) and 0 < len(footer) <= 5
-            and any(IDLE_FOOTER.match(line) for line in footer))
+    hints = [line for line in footer if not AGENT_ROW.match(line)]
+    return (not NON_DIALOG.search("\n".join(above + footer)) and 0 < len(hints) <= 5
+            and any(IDLE_FOOTER.match(line) for line in hints))
 
 
 def idle_check(caller, target, shown):
-    """Refuse unless the chat is idle, on the plain idle screen, with an empty prompt and no copy mode."""
-    if target["state"] != "idle":
-        raise ValueError(f"Chat is {target['state']}; only idle chats take replies"
-                         + ("; reply in the chat yourself" if target["state"] == "shell" else ""))
+    """Refuse unless the chat's turn is done, on the plain idle screen, with an empty prompt and no copy mode."""
+    if target["state"] not in TURN_DONE:
+        raise ValueError(f"Chat is {target['state']}; only chats whose turn is done take replies")
     if time.time() - target["since"] < 2:
         raise ValueError("Chat just changed state; try again")
     lines = SGR.sub("", shown).rstrip("\n").splitlines()
@@ -1046,7 +1049,7 @@ def deliver(caller, target, text, pasted):
     try:
         now = resolve_chat(caller, target["id"], exact=True)
         shown = screen(target["id"], escapes=True)
-        if now["state"] != "idle" or now["since"] != target["since"]:
+        if now["state"] not in TURN_DONE or now["since"] != target["since"]:
             problem = "chat state changed"
         elif DIALOG.search("\n".join(bottom(SGR.sub("", shown).rstrip("\n").splitlines()))):
             problem = "a dialog appeared"
@@ -1062,7 +1065,7 @@ def deliver(caller, target, text, pasted):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         row = claude_registry().get(target["session_id"])
-        if row and (row.get("status") != "idle" or row.get("statusUpdatedAt", 0) / 1000 > target["since"]):
+        if row and (row.get("status") not in TURN_DONE or row.get("statusUpdatedAt", 0) / 1000 > target["since"]):
             return True
         time.sleep(0.2)
     return False
@@ -1149,6 +1152,103 @@ def chat_send(caller, messages):
         audit(caller, entry)
         results.append(out)
     return {"results": results}
+
+
+OPTION = re.compile(r"^(?:❯\s*)?(\d)\.\s+(.+?)\s*$")
+# Options that stop future prompts; the commander approves one action at a time.
+STANDING = re.compile(r"don.?t ask again|always|(during|for) this session|allow all|shift\+tab", re.I)
+# Backstop for Byron's hard stops: a "Yes" to these prompts goes to Byron, whatever the commander decides.
+HARD_STOP = re.compile(r"\bgit\s+push\b|\bgh\s+pr\s+(merge|ready)\b|\b(terraform|tofu)\s+(plan|apply)\b|\batmos\s+terraform\b"
+                       r"|\brm\s|\bgit\s+branch\s+-D\b|\bkubectl\s+delete\b|\bdelete-|slack", re.I)
+
+
+def dialog_options(raw):
+    """The visible permission dialog: (text from its question down, {number: label}). Empty when there is none."""
+    lines = [line.strip().strip("│").strip() for line in SGR.sub("", raw).rstrip("\n").splitlines()[-40:]]
+    starts = [i for i, line in enumerate(lines) if re.search(r"Do you want to|Would you like to", line)]
+    if not starts:
+        return "", {}
+    top = max(0, starts[-1] - 12)  # the command or file shown above the question
+    options = {}
+    for line in lines[starts[-1]:]:
+        match = OPTION.match(line)
+        if match:
+            options[int(match.group(1))] = match.group(2)
+    return "\n".join(lines[top:]), options
+
+
+def dialog_key(block, options):
+    """What must not change between the two reads: the question, command and options, without status icons."""
+    return re.sub(r"[^\x20-\x7e\n]", "", block), options
+
+
+def chat_answer(caller, chat_id, chat_name, option):
+    """Press one option of a permission dialog in a waiting Claude chat."""
+    entry = {"tool": "chat_answer", "chat_id": chat_id, "chat_name": chat_name, "option": option,
+             "result": "refused", "reason": None, "label": None}
+    try:
+        target = resolve_chat(caller, chat_id, exact=True)
+        if target["name"] != chat_name:
+            raise ValueError(f"chat_name does not match; the chat is named {target['name']!r}")
+        if target["role"] == "commander" or not target["backend"].startswith("claude"):
+            raise ValueError("Only other Claude chats can be answered")
+        if target["state"] != "waiting":
+            raise ValueError(f"Chat is {target['state']}; only a chat waiting on a prompt can be answered")
+        block, options = dialog_options(screen(target["id"]))
+        if not isinstance(option, int) or option not in options:
+            raise ValueError(f"No option {option!r} on screen; options: {options or 'none'}")
+        label = entry["label"] = options[option]
+        if STANDING.search(label):
+            raise ValueError("Options that stop future prompts are refused; pick the one-time option")
+        if label.lower().startswith("yes") and HARD_STOP.search(block):
+            raise ValueError("This prompt is a hard stop (push, merge, plan/apply, delete or Slack); ask Byron")
+        rate_check(caller, target["id"], per_chat=False)
+        time.sleep(1)  # second read: the same dialog must still be up
+        again = resolve_chat(caller, target["id"], exact=True)
+        if again["state"] != "waiting" or dialog_key(*dialog_options(screen(target["id"]))) != dialog_key(block, options):
+            raise ValueError("The prompt changed during the check")
+        pane = pane_of(target["id"])
+        if pane_in_mode(pane):
+            raise ValueError("The chat's pane is in tmux copy mode")
+        tmux("send-keys", "-t", pane, str(option), check=True)
+        entry["result"] = "answered"
+        deadline, confirmed = time.monotonic() + 3, False
+        while time.monotonic() < deadline and not confirmed:
+            time.sleep(0.3)
+            confirmed = resolve_chat(caller, target["id"], exact=True)["state"] != "waiting" or not dialog_options(screen(target["id"]))[1]
+        entry["confirmed"] = confirmed
+    except Exception as error:
+        entry["reason"] = str(error) if isinstance(error, ValueError) else f"{type(error).__name__}: {error}"
+    audit(caller, entry)
+    return {k: entry.get(k) for k in ("chat_id", "chat_name", "option", "label", "result", "reason", "confirmed")}
+
+
+GOAL_FIELDS = {"title": 200, "owner": 100, "next": 300, "done_when": 300, "notes": 1000}
+
+
+def goals_path():
+    return ROOT / "commander-goals.json"
+
+
+def goal_save(caller, goals):
+    """Replace the commander's saved goal list (kept across commander restarts)."""
+    if not isinstance(goals, list) or len(goals) > 20:
+        raise ValueError("goals is a list of at most 20 goals")
+    for goal in goals:
+        if not isinstance(goal, dict) or not goal.get("title") or set(goal) - set(GOAL_FIELDS):
+            raise ValueError(f"Each goal needs a title and only these fields: {', '.join(GOAL_FIELDS)}")
+        for key, value in goal.items():
+            if not isinstance(value, str) or len(value) > GOAL_FIELDS[key]:
+                raise ValueError(f"{key} must be text of at most {GOAL_FIELDS[key]} characters")
+    write_private_json(goals_path(), {"goals": goals, "saved": time.time(), "by": caller})
+    return {"saved": len(goals)}
+
+
+def goal_load(caller):
+    try:
+        return {"goals": json.loads(goals_path().read_text()).get("goals", [])}
+    except (OSError, ValueError):
+        return {"goals": []}
 
 
 def notify(commander, counts):
@@ -1454,10 +1554,18 @@ COMMANDER_TOOLS = [
          {"chat": STRING, "source": {"type": "string", "enum": ["transcript", "screen"]},
           "last": {"type": "integer", "minimum": 1, "maximum": 40},
           "max_chars": {"type": "integer", "minimum": 200, "maximum": 12000}}, ["chat"]),
-    tool("chat_send", "Type a one-line reply into 1-3 idle Claude chats and press Enter. Send only what Byron's own message asked for; there is no approval dialog. Each item names the chat by full id AND current name. Text: at most 500 characters, starts with an ASCII letter, one line, no control characters; it is tagged [commander]. Refuses Codex chats, chats that are not idle (working, waiting, shell, unknown), a visible dialog, a non-empty input box, and rate limits. Never use it to answer a permission prompt.",
+    tool("chat_send", "Type a one-line reply into 1-3 Claude chats whose turn is done (idle, or shell: only a background shell or agent runs) and press Enter. Send only what Byron's own message asked for; there is no approval dialog. Each item names the chat by full id AND current name. Text: at most 500 characters, starts with an ASCII letter, one line, no control characters; it is tagged [commander]. Refuses Codex chats, chats whose turn is not done (working, waiting, unknown), a visible dialog, a non-empty input box, and rate limits. Never use it to answer a permission prompt.",
          {"messages": {"type": "array", "minItems": 1, "maxItems": MAX_ITEMS, "items": {
              "type": "object", "properties": {"chat_id": STRING, "chat_name": STRING, "text": STRING},
              "required": ["chat_id", "chat_name", "text"], "additionalProperties": False}}}, ["messages"]),
+    tool("chat_answer", "Press one option of the permission dialog in a Claude chat whose state is waiting. Read the dialog first with chat_read source=screen. option is the number shown before the label. Refuses options that stop future prompts (don't ask again, this session), a Yes to hard-stop prompts (git push, gh pr merge/ready, terraform/tofu plan/apply, rm, deletes, Slack), a changed dialog, copy mode and rate limits. Every answer is logged.",
+         {"chat_id": STRING, "chat_name": STRING, "option": {"type": "integer", "minimum": 1, "maximum": 9}},
+         ["chat_id", "chat_name", "option"]),
+    tool("goal_save", "Replace the saved list of Byron's active goals. Call it whenever a goal starts, changes or ends. The list survives a commander restart.",
+         {"goals": {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {
+             "title": STRING, "owner": STRING, "next": STRING, "done_when": STRING, "notes": STRING},
+             "required": ["title"], "additionalProperties": False}}}, ["goals"]),
+    tool("goal_load", "Read the saved list of Byron's active goals. Call it at the start of a session and after a restart.", {}, []),
 ]
 COMMANDER_NAMES = {item["name"] for item in COMMANDER_TOOLS}
 
@@ -1468,7 +1576,9 @@ def dispatch(caller, name, arguments, inbox=None):
             raise ValueError("The commander chat cannot run team tools")
         if name == "chat_list":
             return chat_list(caller, inbox=inbox, **arguments)
-        return {"chat_read": chat_read, "chat_send": chat_send}[name](caller, **arguments)
+        functions = {"chat_read": chat_read, "chat_send": chat_send, "chat_answer": chat_answer,
+                     "goal_save": goal_save, "goal_load": goal_load}
+        return functions[name](caller, **arguments)
     if name in COMMANDER_NAMES:
         raise ValueError("chat_* tools are only served to a commander launch")
     functions = {function.__name__: function for function in
