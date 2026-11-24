@@ -1162,13 +1162,11 @@ HARD_STOP = re.compile(r"\bgit\s+push\b|\bgh\s+pr\s+(merge|ready)\b|\b(terraform
 
 
 def pending_tools(chat):
-    """Inputs of the chat's tool calls that have no result yet, read from the end of its transcript."""
+    """Inputs of the chat's tool calls that have no result yet. Reads the whole transcript: a tail could cut the newest call."""
     path = transcript_path(chat)
     if not path:
         return []
-    with path.open("rb") as file:
-        file.seek(max(0, path.stat().st_size - 512 * 1024))
-        lines = file.read().decode("utf-8", "replace").splitlines()
+    lines = path.read_text(errors="replace").splitlines()
     pending = {}
     for line in lines:
         try:
@@ -1182,6 +1180,20 @@ def pending_tools(chat):
             elif isinstance(block, dict) and block.get("type") == "tool_result":
                 pending.pop(block.get("tool_use_id"), None)
     return list(pending.values())
+
+
+def is_hard_stop(block, calls):
+    """Search the dialog and every string in the pending calls, with whitespace and control characters as spaces."""
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+    return any(HARD_STOP.search(re.sub(r"[\s\x00-\x1f\x7f]+", " ", text)) for text in strings([block, calls]))
 
 
 def dialog_options(raw):
@@ -1229,7 +1241,7 @@ def chat_answer(caller, chat_id, chat_name, option):
             calls = pending_tools(target)
             if not calls:
                 raise ValueError("Cannot read the pending tool call from the chat's transcript; ask Byron")
-            if HARD_STOP.search(block + "\n" + json.dumps(calls, ensure_ascii=False)):
+            if is_hard_stop(block, calls):
                 raise ValueError("This prompt is a hard stop (push, merge, plan/apply, delete, Slack or a hidden command); ask Byron")
         rate_check(caller, target["id"], per_chat=False)
         time.sleep(1)  # second read: the same dialog must still be up

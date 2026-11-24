@@ -850,6 +850,10 @@ else:
         push = pending("git push origin main && printf 'format=B' > notes.txt")
         assert "hard stop" in answer(1)["reason"]  # the screen shows only the tail; the transcript has the push
         finish(push)
+        for hidden in ("git\tpush origin main", "git\npush origin main", "printf x; git\x0bpush"):
+            call = pending(hidden)
+            assert "hard stop" in answer(1)["reason"], hidden  # tabs, newlines and control characters count as spaces
+            finish(call)
         pending("printf 'format=B' > notes.txt")
         screens[ids["A"]] = perm.replace("1. Yes", "1. Yes, and auto-accept edits")
         assert "one-time Yes" in answer(1)["reason"]
