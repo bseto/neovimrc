@@ -679,7 +679,7 @@ else:
         by = {c["id"]: c for c in listing["chats"]}
         assert set(by) == {ids[k] for k in "ABXN"}, set(by)
         assert by[ids["A"]]["state"] == "idle" and by[ids["B"]]["state"] == "working" and by[ids["X"]]["state"] == "idle"
-        assert by[ids["N"]]["transcript"] is None and by[ids["A"]]["last_prompt"] == "fix the thing"
+        assert "transcript" not in by[ids["N"]] and by[ids["A"]]["last_prompt"] == "fix the thing"
         assert by[ids["X"]]["last_reply"] == "final answer" and by[ids["X"]]["last_prompt"] == "real question"
         assert team.chat_list(ids["C"], inbox=box)["chats"] == []
         with transcript.open("a") as file:
@@ -935,7 +935,7 @@ else:
     settings = json.loads(command[command.index("--settings") + 1])
     assert "ask" not in settings["permissions"] and "mcp__nvim_team__chat_send" in settings["permissions"]["allow"]
     assert {"Bash", "Write", "Edit", "Monitor", "Agent", "WebFetch", "WebSearch", "SendMessage"} <= set(settings["permissions"]["deny"])
-    assert command[command.index("--tools") + 1] == "Read,Skill,ToolSearch" and "--strict-mcp-config" in command
+    assert command[command.index("--tools") + 1] == "Skill,ToolSearch" and "--strict-mcp-config" in command
     assert Path(command[command.index("--append-system-prompt-file") + 1]).is_file()
     servers = json.loads(command[command.index("--mcp-config") + 1])["mcpServers"]["nvim_team"]
     assert servers["args"][-1] == "--commander" and servers["env"]["NVIM_TEAM_TMUX"] == team.TMUX_SOCKET

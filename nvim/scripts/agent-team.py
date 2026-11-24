@@ -142,7 +142,8 @@ def supervisor_command(record, exists):
                                                  "mcp__nvim_team__chat_send"],
                                        "deny": ["Bash", "Write", "Edit", "NotebookEdit", "Monitor", "Agent", "Task",
                                                 "WebFetch", "WebSearch", "SendMessage"]}
-            extra = ["--tools", "Read,Skill,ToolSearch", "--strict-mcp-config",
+            # No Read: raw transcripts would bypass the copy check, which sees only text read through chat_read/chat_list.
+            extra = ["--tools", "Skill,ToolSearch", "--strict-mcp-config",
                      "--append-system-prompt-file", str(COMMANDER_PROMPT)]
         return [backend, "--enable-auto-mode", "--mcp-config",
                 json.dumps({"mcpServers": {"nvim_team": server}}),
@@ -1079,8 +1080,7 @@ def chat_list(caller, full=False, inbox=None):
         rows.append({**{k: chat[k] for k in ("id", "name", "backend", "role", "cwd", "state", "since")},
                      "api_error": bool(messages and messages[-1]["role"] == "error"),
                      "last_prompt": last("user", "queued").get("text", "")[:200],
-                     "last_reply": last("assistant", "error").get("text", "")[:300],
-                     "transcript": str(path) if path else None})
+                     "last_reply": last("assistant", "error").get("text", "")[:300]})
         current[chat["id"]] = [chat["state"], messages[-1]["ts"] if messages else None, messages[-1]["role"] if messages else None]
     previous = None if full or inbox is None else inbox.get("chats")
     changed = rows if previous is None else [r for r in rows if previous.get(r["id"]) != current[r["id"]]]
