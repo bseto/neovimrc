@@ -1211,6 +1211,7 @@ def segments(command):
         try:
             lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
             lexer.whitespace_split = True
+            lexer.commenters = ""  # shlex would end a word at "#"; bash starts a comment only at a word start
             tokens = list(lexer)
         except ValueError:
             return None
@@ -1240,8 +1241,11 @@ def push_problem(tokens, cwd):
     remote, refspecs = (args[0], args[1:]) if args else ("origin", [])
     if remote != "origin":
         return "push to a remote other than origin"
+    if not refspecs:
+        # A named branch makes git ignore push.default, remote.origin.push and remote.origin.mirror.
+        return "name the branch: git push origin <branch> (or HEAD)"
     current = run_in(cwd, "git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    for spec in refspecs or ["HEAD"]:
+    for spec in refspecs:
         if spec.startswith("+"):
             return "force push"
         source, colon, target = spec.partition(":")
@@ -1300,23 +1304,32 @@ def hard_stop_reason(block, calls):
         risky = GIT_PUSH.search(command) or GH_COMMENT.search(command)
         if risky and (parsed is None or re.search(r"\$\(|`|<\(", command)):
             return "git push or gh comment inside a command that cannot be checked"
+        placed = 0
         for tokens in parsed or []:
             if any(re.search(r"(git|gh)[\x00-\x20\x7f]+(push|pr|comment)", t) for t in tokens):
                 return "git push or gh comment hidden inside one shell word"
+            if tokens and re.search(r"[$`]", tokens[0]):
+                return "a command whose name is built at run time"
             names = [os.path.basename(t) for t in tokens]
             if "git" in names and "push" in tokens[names.index("git") + 1:]:
                 if names.index("git") != 0 or "cd" in [p[0] for p in parsed if p]:
                     return "git push must be a plain `git push ...` command, with no cd"
+                others = [p[1] for p in parsed if p and os.path.basename(p[0]) == "git" and p is not tokens and len(p) > 1]
+                if set(others) - {"add", "commit", "status", "diff", "log"}:
+                    return "other git commands next to the push (remote, config, ...) go to Byron"
                 problem = push_problem(tokens, call["cwd"])
                 if problem:
                     return problem
-                approved_push = True
+                approved_push, placed = True, placed + 1
             if "gh" in names and "comment" in tokens[names.index("gh") + 1:]:
                 if names.index("gh") != 0:
                     return "gh comment must be a plain `gh pr comment ...` command"
                 problem = comment_problem(tokens)
                 if problem:
                     return problem
+                placed += 1
+        if risky and not placed:
+            return "git push or gh comment text that the parser cannot place"
     if GIT_PUSH.search(flat(block)) and not approved_push:
         return "the dialog shows a git push that the transcript does not explain"
     return None

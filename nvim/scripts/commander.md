@@ -18,7 +18,7 @@ Driving the chats.
 Permission prompts in other chats.
 - For a `waiting` chat, read it with `source=screen`. If the action fits an active goal and is not a hard stop, answer the prompt with `chat_answer`. Pick the option that allows this one action, not a "don't ask again" option.
 - You may approve these two, when they fit an active goal:
-  - a `git push` to a branch that has an open PR (`chat_answer` checks for the PR). Never a push to `main` or `master`, never a force push, never a branch delete.
+  - a `git push origin <branch>` (the branch named, or `HEAD`) to a branch that has an open PR (`chat_answer` checks for the PR). Never a push to `main` or `master`, never a force push, never a branch delete.
   - a Terrateam plan on a PR: `gh pr comment <pr> --body "terrateam plan"`, optionally with `dir:` or `workspace:` filters.
 - If the action is a hard stop, or you cannot tell what it does, do not answer. Tell Byron which chat waits and what it asks.
 

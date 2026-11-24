@@ -867,7 +867,7 @@ else:
                 finish(call)
                 return result
 
-            for allowed in ("git push origin feature-x", "git push", "git push -u origin HEAD",
+            for allowed in ("git push origin feature-x", "git push -u origin HEAD",
                             "git push origin feature-x:feature-x", 'gh pr comment 12 --body "terrateam plan"',
                             "gh pr comment 12 -b 'terrateam plan dir:terraform/x workspace:default'",
                             'git commit -m "fix consumer" && git push origin feature-x'):
@@ -885,7 +885,10 @@ else:
                     ('gh pr comment 12 --body "terrateam plan; terrateam apply"', "terrateam plan"),
                     ('gh pr comment 12 --body "lgtm"', "terrateam plan"), ("gh pr comment 12 --body-file x", "option"),
                     ("gh pr ready 12", "hard stop"), ("gh pr merge 12", "hard stop"), ("terraform plan", "hard stop"),
-                    ("tofu apply", "hard stop")):
+                    ("tofu apply", "hard stop"), ("printf x#; git push origin main", "push to main"),
+                    ("G=git; $G push origin main", "built at run time"), ("git push", "name the branch"),
+                    ("git push origin", "name the branch"), ('git commit -m "fix push"', "cannot place"),
+                    ("git remote set-url origin x && git push origin feature-x", "other git commands")):
                 result = approve(refused_command)
                 assert result["result"] == "refused" and why in result["reason"], (refused_command, result)
             # the screen shows a push the transcript does not explain
