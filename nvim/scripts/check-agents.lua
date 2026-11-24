@@ -307,6 +307,10 @@ vim.fn.writefile(
   team_home .. "/" .. first_session .. "/agent.json"
 )
 vim.fn.writefile({ vim.json.encode({ used_pct = 42 }) }, ctx_tmp .. "/claude-ctx-ctx-session.json")
+vim.fn.writefile(
+  { vim.json.encode({ model = "Opus 5.5", effort = "high" }) },
+  ctx_tmp .. "/claude-model-ctx-session.json"
+)
 status_callback({ buf = first.buf }, "idle")
 status_callback({ buf = second.buf }, "busy")
 agent.open(1)
@@ -324,7 +328,7 @@ local function card(name)
 end
 local fix_auth = card("Fix auth")
 local footer = vim.api.nvim_win_get_config(fix_auth).footer
-assert(footer[1][1] == " Idle " and footer[2][1] == "42% ", vim.inspect(footer))
+assert(footer[1][1] == " Idle " and footer[2][1] == "42% " and footer[3][1] == "Opus 5.5 high ", vim.inspect(footer))
 assert(vim.api.nvim_win_get_config(card("Chat 2")).footer[2] == nil)
 assert(vim.api.nvim_win_get_position(fix_auth)[2] > 2) -- not in the first slot yet
 vim.api.nvim_set_current_win(fix_auth)

@@ -521,25 +521,33 @@ local function fill(slot, chat)
 end
 
 --- Context used, as the statusline shows it; Claude's statusline hook writes it per session.
-local function context_used(chat)
+--- A per-session JSON file in $TMPDIR, written by Claude's status line: claude-ctx-<session>.json (GSD hook)
+--- or claude-model-<session>.json (scripts/statusline-usage.sh).
+local function session_file(chat, prefix)
   local session = chat.record.session_id or vim.b[chat.buf].snacks_terminal.env.NVIM_TEAM_SESSION
   if not session then
-    return nil
+    return {}
   end
-  local ok, pct = pcall(function()
-    local path = vim.fs.joinpath(vim.uv.os_tmpdir(), "claude-ctx-" .. session .. ".json")
-    return vim.json.decode(table.concat(vim.fn.readfile(path), "\n")).used_pct
+  local ok, value = pcall(function()
+    local path = vim.fs.joinpath(vim.uv.os_tmpdir(), prefix .. session .. ".json")
+    return vim.json.decode(table.concat(vim.fn.readfile(path), "\n"))
   end)
-  return ok and tonumber(pct) or nil
+  return ok and type(value) == "table" and value or {}
 end
 
+--- Bottom bar of a card: state, context used (as the status line shows it), then model and effort.
 local function footer(chat)
   local state = chat.state
   local chunks = { { " " .. state[2] .. " ", state[3] .. "Glow" } }
-  local pct = context_used(chat)
+  local pct = tonumber(session_file(chat, "claude-ctx-").used_pct)
   if pct then
     local hl = pct >= 80 and "DiagnosticError" or pct >= 50 and "DiagnosticWarn" or "Comment"
     table.insert(chunks, { pct .. "% ", hl })
+  end
+  local info = session_file(chat, "claude-model-")
+  if type(info.model) == "string" then
+    local label = info.model:gsub("^Claude ", "") .. (type(info.effort) == "string" and " " .. info.effort or "")
+    table.insert(chunks, { label .. " ", "AgentAccent3" })
   end
   return chunks
 end
