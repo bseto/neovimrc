@@ -1155,11 +1155,33 @@ def chat_send(caller, messages):
 
 
 OPTION = re.compile(r"^(?:❯\s*)?(\d)\.\s+(.+?)\s*$")
-# Options that stop future prompts; the commander approves one action at a time.
-STANDING = re.compile(r"don.?t ask again|always|(during|for) this session|allow all|shift\+tab", re.I)
 # Backstop for Byron's hard stops: a "Yes" to these prompts goes to Byron, whatever the commander decides.
 HARD_STOP = re.compile(r"\bgit\s+push\b|\bgh\s+pr\s+(merge|ready)\b|\b(terraform|tofu)\s+(plan|apply)\b|\batmos\s+terraform\b"
-                       r"|\brm\s|\bgit\s+branch\s+-D\b|\bkubectl\s+delete\b|\bdelete-|slack", re.I)
+                       r"|\brm\s|\bgit\s+branch\s+-D\b|\bkubectl\s+delete\b|\bdelete-|slack"
+                       r"|\beval\b|base64|\b(ba|z)?sh\s+-c\b|\|\s*(ba|z)?sh\b", re.I)
+
+
+def pending_tools(chat):
+    """Inputs of the chat's tool calls that have no result yet, read from the end of its transcript."""
+    path = transcript_path(chat)
+    if not path:
+        return []
+    with path.open("rb") as file:
+        file.seek(max(0, path.stat().st_size - 512 * 1024))
+        lines = file.read().decode("utf-8", "replace").splitlines()
+    pending = {}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        content = row.get("message", {}).get("content") if isinstance(row, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
+                pending[block["id"]] = block.get("input")
+            elif isinstance(block, dict) and block.get("type") == "tool_result":
+                pending.pop(block.get("tool_use_id"), None)
+    return list(pending.values())
 
 
 def dialog_options(raw):
@@ -1198,10 +1220,17 @@ def chat_answer(caller, chat_id, chat_name, option):
         if not isinstance(option, int) or option not in options:
             raise ValueError(f"No option {option!r} on screen; options: {options or 'none'}")
         label = entry["label"] = options[option]
-        if STANDING.search(label):
-            raise ValueError("Options that stop future prompts are refused; pick the one-time option")
-        if label.lower().startswith("yes") and HARD_STOP.search(block):
-            raise ValueError("This prompt is a hard stop (push, merge, plan/apply, delete or Slack); ask Byron")
+        approve = label.strip().lower() == "yes"
+        # Allow-list: the one-time "Yes" or a "No"; any other option (don't ask again, auto-accept, ...) goes to Byron.
+        if not approve and not label.lower().startswith("no"):
+            raise ValueError("Only the one-time Yes or a No option can be chosen; ask Byron about the others")
+        if approve:
+            # The screen can cut a long command off, so the check also reads the full pending call from the transcript.
+            calls = pending_tools(target)
+            if not calls:
+                raise ValueError("Cannot read the pending tool call from the chat's transcript; ask Byron")
+            if HARD_STOP.search(block + "\n" + json.dumps(calls, ensure_ascii=False)):
+                raise ValueError("This prompt is a hard stop (push, merge, plan/apply, delete, Slack or a hidden command); ask Byron")
         rate_check(caller, target["id"], per_chat=False)
         time.sleep(1)  # second read: the same dialog must still be up
         again = resolve_chat(caller, target["id"], exact=True)
@@ -1558,7 +1587,7 @@ COMMANDER_TOOLS = [
          {"messages": {"type": "array", "minItems": 1, "maxItems": MAX_ITEMS, "items": {
              "type": "object", "properties": {"chat_id": STRING, "chat_name": STRING, "text": STRING},
              "required": ["chat_id", "chat_name", "text"], "additionalProperties": False}}}, ["messages"]),
-    tool("chat_answer", "Press one option of the permission dialog in a Claude chat whose state is waiting. Read the dialog first with chat_read source=screen. option is the number shown before the label. Refuses options that stop future prompts (don't ask again, this session), a Yes to hard-stop prompts (git push, gh pr merge/ready, terraform/tofu plan/apply, rm, deletes, Slack), a changed dialog, copy mode and rate limits. Every answer is logged.",
+    tool("chat_answer", "Press one option of the permission dialog in a Claude chat whose state is waiting. Read the dialog first with chat_read source=screen. option is the number shown before the label. Only the one-time 'Yes' or a 'No' option can be chosen. Refuses a Yes to hard-stop prompts (git push, gh pr merge/ready, terraform/tofu plan/apply, rm, deletes, Slack, eval/base64/sh -c), checked against the full pending tool call in the transcript; also refuses a changed dialog, copy mode and rate limits. Every answer is logged.",
          {"chat_id": STRING, "chat_name": STRING, "option": {"type": "integer", "minimum": 1, "maximum": 9}},
          ["chat_id", "chat_name", "option"]),
     tool("goal_save", "Replace the saved list of Byron's active goals. Call it whenever a goal starts, changes or ends. The list survives a commander restart.",

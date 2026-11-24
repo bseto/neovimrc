@@ -830,11 +830,29 @@ else:
         assert team.dialog_options(perm)[1] == {1: "Yes", 2: "Yes, and don't ask again for printf commands in /work",
                                                3: "No, and tell Claude what to do differently (esc)"}
         answer = lambda option: team.chat_answer(ids["C"], ids["A"], "alpha", option)
+
+        def pending(command):
+            call = str(uuid.uuid4())
+            with transcript.open("a") as file:
+                file.write(text("assistant", [{"type": "tool_use", "id": call, "name": "Bash", "input": {"command": command}}]) + "\n")
+            return call
+
+        def finish(call):
+            with transcript.open("a") as file:
+                file.write(text("user", [{"type": "tool_result", "tool_use_id": call, "content": ""}]) + "\n")
+
         log.write_text("")
         registry("A", sa, "waiting")
         screens[ids["A"]] = perm
-        assert "stop future prompts" in answer(2)["reason"]
+        assert "one-time Yes" in answer(2)["reason"]
         assert "No option 5" in answer(5)["reason"]
+        assert "pending tool call" in answer(1)["reason"]  # no pending call in the transcript: refuse
+        push = pending("git push origin main && printf 'format=B' > notes.txt")
+        assert "hard stop" in answer(1)["reason"]  # the screen shows only the tail; the transcript has the push
+        finish(push)
+        pending("printf 'format=B' > notes.txt")
+        screens[ids["A"]] = perm.replace("1. Yes", "1. Yes, and auto-accept edits")
+        assert "one-time Yes" in answer(1)["reason"]
         screens[ids["A"]] = perm.replace("printf 'format=B' > notes.txt", "git push origin main")
         assert "hard stop" in answer(1)["reason"]
         assert answer(3)["result"] == "answered"  # declining a hard stop is fine
