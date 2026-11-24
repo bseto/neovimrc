@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise durable worker question/resume/stop and MCP transport without model calls."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -172,7 +173,9 @@ else:
     team.save(delivered)
     failure = team.deliver_worker_report(worker["id"], delivered["run_id"])
     assert failure["event_id"].endswith(":failure:1") and failure["socket_write"] == "complete"
-    assert "last_error=could not auto resolve a provider for gpt-6-sol" in sent[-1][1]
+    # Worker-produced text never rides in the user-role notice; team_status carries it.
+    assert "gpt-6-sol" not in sent[-1][1] and "OAuth" not in sent[-1][1] and "team_status" in sent[-1][1]
+    assert "Event result" not in sent[0][1]
     delivered = team.read(worker["id"])
     delivered.update(status="done", last_error=None)
     team.save(delivered)
@@ -314,7 +317,19 @@ else:
         "kind": "planner", "name": "Plan color", "task": "Research color and ask about missing decisions.", "owner_token": token})
     assert planner["backend"] == "claude" and planner["model"] == "opus"
     assert "task" not in planner and "assignment" not in planner, "mutations must return summaries"
-    assert "--mcp-config" in shlex.split(team.worker_command({**planner, "mcp_config": "{}"}, root / "out.json")[2])
+    # MCP configs run commands, so only files the user placed in MCP_DIR are accepted.
+    team.MCP_DIR = root / "mcp"
+    team.MCP_DIR.mkdir()
+    (team.MCP_DIR / "grafana.json").write_text("{}")
+    approved = team.approved_mcp_config("grafana")
+    worker_args = shlex.split(team.worker_command({**planner, "mcp_config": approved}, root / "out.json")[2])
+    assert worker_args[worker_args.index("--mcp-config") + 1] == approved
+    for bad in ("{}", '{"mcpServers": {}}', "-x", "../grafana", "/etc/passwd", "missing"):
+        try:
+            team.approved_mcp_config(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"accepted mcp_config {bad!r}")
     planner_args = shlex.split(team.worker_command(planner, root / "out.json")[2])
     assert planner_args[0] == "claude" and planner_args[planner_args.index("--model") + 1] == "opus"
     # Planning stays on the user's Claude subscription until they choose otherwise;
@@ -398,6 +413,7 @@ else:
         "phase": "execution", "plan_path": str(plan), "owner_token": token})
     checkpoint_at = team.read(supervisor)["checkpoint_at"]
     rejected(supervisor, "worker_start", {"kind": "executor", "backend": "codex-bf", "name": "Codex servers", "task": "Work", "mcp_config": "{}", "owner_token": token})
+    rejected(supervisor, "worker_start", {"kind": "planner", "name": "Inline MCP", "task": "Work", "mcp_config": '{"mcpServers": {}}', "owner_token": token})
     coder = team.dispatch(supervisor, "worker_start", {"kind": "executor", "name": "Code color", "task": "Implement blue.", "owner_token": token})
     assert (coder["backend"], coder["model"], coder["purpose"]) == ("claude", "opus", "code")
     qa = team.dispatch(supervisor, "worker_start", {"purpose": "qa", "name": "QA color", "task": "Check blue.", "owner_token": token})
@@ -502,24 +518,24 @@ else:
     # preserves the mode of the already-running process. No real tmux/model calls.
     with patch.dict(os.environ):
         os.environ.pop("NVIM_TEAM_DELIVERY", None)
-        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1)) as launch_tmux, \
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1, stdout="")) as launch_tmux, \
                 patch.object(team.os, "execvp"), patch.object(team, "ensure_mcp_login") as login:
             for backend, expected in (("claude", "events"), ("claude-bf", "events"), ("codex-bf", "poll")):
                 chat_id = str(uuid.uuid4())
                 team.launch(backend, chat_id)
                 assert team.read(chat_id)["delivery"] == expected
                 assert [call.args[0] for call in login.call_args_list] == (list(team.CODEX_OAUTH_PLUGINS) if backend == "codex-bf" else [])
-                launch_tmux.assert_called_with("set-option", "-t", team.session_name(chat_id), "mouse", "on", check=True)
+                launch_tmux.assert_any_call("set-option", "-t", team.session_name(chat_id), "mouse", "on", check=True)
             os.environ["NVIM_TEAM_DELIVERY"] = "poll"
             chat_id = str(uuid.uuid4())
             team.launch("claude", chat_id)
             assert team.read(chat_id)["delivery"] == "poll"
         os.environ.pop("NVIM_TEAM_DELIVERY")
-        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0)) as launch_tmux, \
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0, stdout="")) as launch_tmux, \
                 patch.object(team.os, "execvp"):
             team.launch("claude", chat_id)
             assert team.read(chat_id)["delivery"] == "poll"
-            launch_tmux.assert_called_with("set-option", "-t", team.session_name(chat_id), "mouse", "on", check=True)
+            launch_tmux.assert_any_call("set-option", "-t", team.session_name(chat_id), "mouse", "on", check=True)
             assert "new-session" not in [call.args[0] for call in launch_tmux.call_args_list]
     with patch.object(team.shutil, "which", return_value="codex"), \
             patch.object(team.subprocess, "run") as run:
@@ -540,7 +556,7 @@ else:
         assert [call.args[0] for call in launch_tmux.call_args_list] == ["has-session"]
         attach.assert_not_called()
 
-    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0)), \
+    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 0, stdout="")), \
             patch.object(team.os, "execvp"), patch.object(team, "ensure_mcp_login") as login:
         team.launch("codex-bf", codex_id)
         login.assert_not_called()
@@ -551,4 +567,428 @@ else:
         assert set(rows[0]) == {"id", "backend", "name", "role", "cwd", "created", "attached"}
     with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1, stdout="")):
         assert team.running() == []
+    # Commander chat: fixtures only, no real tmux or model. The chat_* tools unlock from the MCP
+    # launch flag, never from agent.json.
+    team.CLAUDE_DIR, team.CODEX_DIR = root / "claude", root / "codex"
+    (team.CLAUDE_DIR / "sessions").mkdir(parents=True)
+    (team.CLAUDE_DIR / "projects/p").mkdir(parents=True)
+    (team.CODEX_DIR / "sessions/2026/11/23").mkdir(parents=True)
+    ids = {key: str(uuid.uuid4()) for key in "CABPWXN"}
+    sa, sx = str(uuid.uuid4()), str(uuid.uuid4())
+    for key, extra in {"C": {"role": "commander", "delivery": "events"}, "A": {"session_id": sa, "name": "alpha"},
+                       "B": {}, "P": {"config_dir": str(root / "personal")}, "W": {"role": "worker"},
+                       "X": {"backend": "codex-bf", "chat_status": "idle", "session_id": sx},
+                       "N": {"backend": "codex-bf", "session_id": None}}.items():
+        team.save({"id": ids[key], "parent": None, "role": "chat", "name": key, "backend": "claude", "cwd": str(root),
+                   "created": time.time(), "session_id": ids[key], "config_dir": "", **extra})
+    (team.directory(ids["X"]) / "name").write_text("xray\n")
+    (team.directory(ids["A"]) / "name").write_text("alpha\n")
+    now_ms = lambda ago: int((time.time() - ago) * 1000)
+    rows = {}
+
+    def registry(key, session, status="idle", ago=10, name=None, pid=None):
+        rows[key] = {"pid": pid or os.getpid(), "sessionId": session, "kind": "interactive", "name": name or key,
+                     "tmux": f"team-{ids.get(key, key)}:@1.%1", "status": status, "statusUpdatedAt": now_ms(ago)}
+        (team.CLAUDE_DIR / "sessions" / f"{key}.json").write_text(json.dumps(rows[key]))
+
+    registry("A", sa)
+    registry("B", ids["B"], "busy")
+    registry("D", str(uuid.uuid4()), pid=999999)
+    registry("C", ids["C"])
+    ledger = json.dumps({"type": "artifact-autoreact-ledger", "pad": "x" * 1000})
+    transcript = team.CLAUDE_DIR / "projects/p" / f"{sa}.jsonl"
+    text = lambda role, content, **kw: json.dumps({"type": role, "timestamp": "2026-11-23T00:00:00Z",
+                                                   "message": {"content": content}, **kw})
+    transcript.write_text("\n".join([
+        text("user", "fix the thing"), text("assistant", [{"type": "text", "text": "done, ok?"}]),
+        text("assistant", [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]),
+        text("user", "meta text", isMeta=True), text("user", "<system-reminder>x</system-reminder>"),
+        json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "<task-notification>x"}),
+        json.dumps({"type": "queue-operation", "operation": "enqueue", "content": "plain"}),
+        json.dumps({"type": "queue-operation", "operation": "dequeue", "content": "plain"}),
+        *[ledger] * 3000]) + "\n")
+    rollout = team.CODEX_DIR / "sessions/2026/11/23" / f"rollout-2026-11-23T00-00-00-{sx}.jsonl"
+    message = lambda role, kind, body: json.dumps({"type": "response_item", "timestamp": "t", "payload": {
+        "type": "message", "role": role, "content": [{"type": kind, "text": body}]}})
+    rollout.write_text("\n".join([
+        message("user", "input_text", "# AGENTS.md instructions for x"), message("user", "input_text", "real question"),
+        message("developer", "input_text", "dev text"),
+        json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "shell"}}),
+        message("assistant", "output_text", "final answer")]) + "\n")
+
+    rule = "─" * 80
+    footer = "  work │ Opus 5.5\n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+    idle_screen = f'out\n{rule}\n❯\xa0\x1b[2mTry "fix lint"\x1b[0m\n{rule}\n{footer}'
+    typed = lambda body: f"out\n{rule}\n❯ {body}\n{rule}\n{footer}"
+    dialog_screen = f"Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel\n"
+    assert team.input_text(idle_screen) == "" and team.input_text(typed("half typed")) == "half typed"
+    assert team.input_text(dialog_screen) is None and team.DIALOG.search(dialog_screen)
+    assert not team.DIALOG.search(team.SGR.sub("", idle_screen))
+    # SGR: only attribute 2 is dim; 38/48 colour arguments (truecolor, 256, colon form) are not
+    for params, start, dim in (("2", False, True), ("38;2;1;2;3", False, False), ("38;5;2", False, False), ("48;2;9;2;9", False, False),
+                               ("38:2::1:2:3", False, False), ("1;2", False, True), ("38;2;1;2;3;2", False, True),
+                               ("2;38;2;1;2;3", False, True), ("38;2;1;2;3", True, True), ("39", True, True),
+                               ("22", True, False), ("0", True, False), ("", True, False)):
+        assert team.sgr_dim(params, start) is dim, params
+    assert team.input_text(f"out\n{rule}\n❯ \x1b[38;2;10;20;30mhalf typed\x1b[39m\n{rule}\n{footer}") == "half typed"
+    assert team.input_text(f"out\n{rule}\n\x1b[38;2;1;2;3m❯\x1b[39m typed text\n{rule}\n{footer}") == "typed text"
+    assert team.input_text(f"out\n{rule}\n❯ \x1b[38;5;2mhalf\x1b[0m\n{rule}\n{footer}") == "half"
+    assert team.input_text(f"out\n{rule}\n❯ \x1b[2;38;2;1;2;3mTry x\x1b[0m\n{rule}\n{footer}") == ""
+    plain_lines = lambda body: team.SGR.sub("", body).rstrip("\n").splitlines()
+    survey = f"1: Bad  2: Fine  3: Good  0: Dismiss\nHow is Claude doing this session? (optional)\n{rule}\n❯ \n{rule}\n{footer}"
+    assert not team.idle_layout(plain_lines(survey)) and team.idle_layout(plain_lines(idle_screen))
+    assert not team.idle_layout(plain_lines(f"out\n{rule}\n❯ \n{rule}\n  work │ Opus 5.5\n"))
+    assert not team.idle_layout(plain_lines(f"out\n{rule}\n❯ \n{rule}\n  Can Anthropic look at your session transcript to help us improve Claude Code?\n{footer}"))
+    assert not team.idle_layout(plain_lines(f"out\n{rule}\n❯ \n{rule}\n" + "  x\n" * 6 + footer))
+    asked = f"Would you like to merge it now?\n{rule}\n❯ \n{rule}\n{footer}"
+    assert not team.DIALOG.search("\n".join(team.bottom(plain_lines(asked)))) and team.idle_layout(plain_lines(asked))
+    assert team.DIALOG.search("\n".join(team.bottom(plain_lines(dialog_screen))))
+    screens, calls, listed = {}, [], {"v": {"team-" + ids[k] for k in "CABPWXN"}}
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        out = ""
+        if args[0] == "list-sessions":
+            out = "\n".join(sorted(listed["v"]))
+        elif args[0] == "list-panes":
+            out = "%" + args[2][len("=team-"):-1] + "\n"
+        elif args[0] == "capture-pane":
+            out = screens.get(args[-1][1:], idle_screen)
+        elif args[0] == "display-message":
+            out = screens.get("mode", "0")
+        elif args[0] == "paste-buffer":
+            target = args[-1][1:]
+            screens[target] = typed(screens["paste"])
+        elif args[0] == "load-buffer":
+            screens["paste"] = kwargs["input"]
+        elif args[0] == "send-keys" and args[-1] == "Enter":
+            rows["A"]["status"] = "busy"
+            (team.CLAUDE_DIR / "sessions/A.json").write_text(json.dumps(rows["A"]))
+        return subprocess.CompletedProcess(args, 0, stdout=out)
+
+    def refused(items, reason, **kw):
+        calls.clear()
+        result = team.chat_send(ids["C"], items)["results"][0]
+        assert result["result"] == "refused" and reason in result["reason"], result
+        assert not any(c[0] == "paste-buffer" for c in calls)
+        return result
+
+    send = lambda key, body, name=None: [{"chat_id": ids[key], "chat_name": name or {"A": "alpha"}.get(key, key), "text": body}]
+    with patch.object(team, "tmux", fake), patch.object(team.time, "sleep"):
+        listing = team.chat_list(ids["C"], inbox=(box := {}))
+        by = {c["id"]: c for c in listing["chats"]}
+        assert set(by) == {ids[k] for k in "ABXN"}, set(by)
+        assert by[ids["A"]]["state"] == "idle" and by[ids["B"]]["state"] == "working" and by[ids["X"]]["state"] == "idle"
+        assert by[ids["N"]]["transcript"] is None and by[ids["A"]]["last_prompt"] == "fix the thing"
+        assert by[ids["X"]]["last_reply"] == "final answer" and by[ids["X"]]["last_prompt"] == "real question"
+        assert team.chat_list(ids["C"], inbox=box)["chats"] == []
+        with transcript.open("a") as file:
+            file.write(ledger + "\n")
+        assert team.chat_list(ids["C"], inbox=box)["chats"] == []
+        with transcript.open("a") as file:
+            file.write(text("assistant", [{"type": "text", "text": "new reply"}], timestamp="2026-11-23T00:00:09Z") + "\n")
+        assert [c["id"] for c in team.chat_list(ids["C"], inbox=box)["chats"]] == [ids["A"]]
+        assert len(team.chat_list(ids["C"], full=True, inbox=box)["chats"]) == 4
+        listed["v"].discard("team-" + ids["B"])
+        assert team.chat_list(ids["C"], inbox=box)["removed"] == [ids["B"]]
+        listed["v"].add("team-" + ids["B"])
+        read_items = team.chat_read(ids["C"], ids["A"][:8])["items"]
+        assert [i["role"] for i in read_items] == ["user", "assistant", "tool", "assistant"], read_items
+        for bad, word in (("nope", "No live chat"),):
+            try:
+                team.chat_read(ids["C"], bad)
+            except ValueError as error:
+                assert word in str(error)
+            else:
+                raise AssertionError(bad)
+        screens[ids["A"]] = idle_screen
+        assert team.chat_read(ids["C"], ids["A"], source="screen")["screen"][0] == "out"
+
+        # chat_send guards: every refusal happens before any paste
+        refused(send("B", "hello there"), "Chat is working")
+        refused(send("X", "hello there", "xray"), "Codex")
+        refused(send("A", "hello", "wrong"), "chat_name does not match")
+        refused([{"chat_id": ids["A"][:8], "chat_name": "alpha", "text": "hello"}], "No live chat")
+        for body, why in (("/clear", "ASCII letter"), ("!ls", "ASCII letter"), ("1", "ASCII letter"), (" 2 yes", "ASCII letter"),
+                          ("a\x1b[201~b", "control"), ("a\nb", "control"), ("a‮b", "control"), ("a​b", "control"),
+                          ("x" * 501, "1-500"), ("see @", "end with a word"), ("look in /tmp", "end with a word")):
+            refused(send("A", body), why)
+        try:
+            team.chat_send(ids["C"], send("A", "a") * 4)
+        except ValueError as error:
+            assert "1-3" in str(error)
+        else:
+            raise AssertionError("4 items")
+        try:
+            team.chat_send(ids["C"], send("A", "a" * 450) * 3)
+        except ValueError as error:
+            assert "1200" in str(error)
+        else:
+            raise AssertionError("batch size")
+        screens[ids["A"]] = dialog_screen
+        refused(send("A", "hello"), "dialog")
+        screens[ids["A"]] = typed("half typed")
+        refused(send("A", "hello"), "not empty")
+        screens[ids["A"]] = "no prompt here\n"
+        refused(send("A", "hello"), "plain idle layout")
+        screens[ids["A"]] = idle_screen
+        screens["mode"] = "1"
+        refused(send("A", "hello"), "copy mode")
+        screens["mode"] = "0"
+        registry("A", sa, ago=0.5)
+        refused(send("A", "hello"), "just changed state")
+        registry("A", sa)
+        registry("A2", sa)
+        assert [c["state"] for c in team.live_chats(ids["C"]) if c["id"] == ids["A"]] == ["unknown"]
+        refused(send("A", "hello"), "only idle chats")
+        (team.CLAUDE_DIR / "sessions/A2.json").unlink()
+        registry("A", sa)
+        seen = team.seen_text[:]
+        team.seen_text.append("The quick brown fox jumps over the lazy dog, again and again.")
+        refused(send("A", "Write: The quick brown fox jumps over the lazy dog, again and again."), "copies")
+        team.seen_text[:] = seen
+        screens[ids["A"]] = idle_screen
+        calls.clear()
+
+        # success: one bracketed paste, then Enter; never send-keys -l
+        result = team.chat_send(ids["C"], send("A", "Please continue"))["results"][0]
+        assert result["result"] == "sent" and result["confirmed"], result
+        names = [c[0] for c in calls if c[0] in ("load-buffer", "paste-buffer", "send-keys")]
+        assert names == ["load-buffer", "paste-buffer", "send-keys"] and calls[-2][-1] != "-l"
+        assert all("-l" not in c for c in calls if c[0] == "send-keys")
+        assert screens["paste"] == "[commander] Please continue"
+        assert ["-t", "=team-" + ids["A"] + ":"] == list(next(c for c in calls if c[0] == "list-panes")[1:3])
+        log_rows = [json.loads(line) for line in (team.directory(ids["C"]) / "commander.log").read_text().splitlines()]
+        assert log_rows[-1]["result"] == "sent" and log_rows[-1]["text"] == "[commander] Please continue" and log_rows[-1]["sha256"]
+        for earlier, later in zip(log_rows, log_rows[1:]):
+            assert later["prev"] == hashlib.sha256(json.dumps(earlier).encode()).hexdigest()
+        assert oct((team.directory(ids["C"]) / "commander.log").stat().st_mode & 0o777) == "0o600"
+        refused(send("A", "again please"), "1 send per chat per 30 s")
+        # re-check failure: a dialog appears after the paste, no Enter is sent
+        registry("A", sa)
+        screens[ids["A"]] = idle_screen
+        (team.directory(ids["C"]) / "commander.log").write_text("")
+        calls.clear()
+        original_fake = fake
+
+        def late_dialog(*args, **kwargs):
+            result = original_fake(*args, **kwargs)
+            if args[0] == "paste-buffer":
+                screens[ids["A"]] = dialog_screen
+            return result
+        with patch.object(team, "tmux", late_dialog):
+            result = team.chat_send(ids["C"], send("A", "Please continue"))["results"][0]
+        assert result["result"] == "refused" and result.get("text_left_in_input"), result
+        assert not any(c[0] == "send-keys" for c in calls)
+        screens[ids["A"]] = idle_screen
+        # the box shows something other than our text: no Enter
+        calls.clear()
+
+        def other_text(*args, **kwargs):
+            result = original_fake(*args, **kwargs)
+            if args[0] == "paste-buffer":
+                screens[ids["A"]] = typed("someone typed here too")
+            return result
+        with patch.object(team, "tmux", other_text):
+            result = team.chat_send(ids["C"], send("A", "Please continue"))["results"][0]
+        assert result["result"] == "refused" and "exactly" in result["reason"]
+        assert not any(c[0] == "send-keys" for c in calls)
+        screens[ids["A"]] = idle_screen
+        log = team.directory(ids["C"]) / "commander.log"
+        # a survey above an empty box, or a missing footer, is refused before any paste
+        log.write_text("")
+        for bad in (survey, f"out\n{rule}\n❯ \n{rule}\n  work │ Opus 5.5\n"):
+            screens[ids["A"]] = bad
+            refused(send("A", "hello"), "plain idle layout")
+        # a reply that asks "Would you like to" does not block a send
+        screens[ids["A"]] = f"Would you like to merge it now?\n{rule}\n❯\xa0\x1b[2mTry x\x1b[0m\n{rule}\n{footer}"
+        assert team.chat_send(ids["C"], send("A", "Yes merge it"))["results"][0]["result"] == "sent"
+        # bypass-permissions chats are refused by their footer; manual-mode chats are allowed
+        log.write_text("")
+        registry("A", sa)
+        screens[ids["A"]] = idle_screen.replace("⏵⏵ auto mode on", "⏵⏵ bypass permissions on")
+        refused(send("A", "hello"), "plain idle layout")
+        screens[ids["A"]] = idle_screen.replace("⏵⏵ auto mode on (shift+tab to cycle)", "⏸ manual mode on")
+        assert team.chat_send(ids["C"], send("A", "Manual mode is fine"))["results"][0]["result"] == "sent"
+        log.write_text("")
+        registry("A", sa)
+        screens[ids["A"]] = idle_screen
+        # copy mode is checked right before the paste: entering it during the second idle read is caught
+        def mode_late(*args, **kwargs):
+            if args[0] == "capture-pane":
+                screens["mode"] = "1"
+            return original_fake(*args, **kwargs)
+        calls.clear()
+        screens[ids["A"]] = idle_screen
+        with patch.object(team, "tmux", mode_late):
+            result = team.chat_send(ids["C"], send("A", "Please continue"))["results"][0]
+        assert result["result"] == "refused" and "copy mode" in result["reason"] and not result.get("text_left_in_input"), result
+        assert not any(c[0] == "paste-buffer" for c in calls)
+        screens["mode"] = "0"
+        # tmux failure after the paste: audited, text_left_in_input; before the paste: audited, no text left
+        log.write_text("")
+
+        def enter_fails(*args, **kwargs):
+            if args[0] == "send-keys":
+                raise subprocess.CalledProcessError(1, "tmux")
+            return original_fake(*args, **kwargs)
+
+        def paste_fails(*args, **kwargs):
+            if args[0] == "load-buffer":
+                raise subprocess.CalledProcessError(1, "tmux")
+            return original_fake(*args, **kwargs)
+        for failing, left in ((enter_fails, True), (paste_fails, False)):
+            registry("A", sa)
+            screens[ids["A"]] = idle_screen
+            with patch.object(team, "tmux", failing):
+                result = team.chat_send(ids["C"], send("A", "Please continue"))["results"][0]
+            assert result["result"] == "refused" and "CalledProcessError" in result["reason"], result
+            assert bool(result.get("text_left_in_input")) == left, result
+            assert json.loads(log.read_text().splitlines()[-1])["result"] == "refused"
+        # one bad item does not hide the others: item 1 has a wrong type, item 2 is refused normally, both audited
+        log.write_text("")
+        registry("A", sa)
+        screens[ids["A"]] = idle_screen
+        two = team.chat_send(ids["C"], [{"chat_id": ids["A"], "chat_name": "alpha", "text": 123}] + send("B", "hello", "B"))["results"]
+        assert [r["result"] for r in two] == ["refused", "refused"] and "TypeError" in two[0]["reason"], two
+        assert len(log.read_text().splitlines()) == 2
+        screens[ids["A"]] = idle_screen
+        (team.directory(ids["C"]) / "commander.log").write_text(
+            "".join(json.dumps({"time": time.time(), "result": "sent", "chat_id": str(uuid.uuid4())}) + "\n" for _ in range(10)))
+        refused(send("A", "hello"), "10 sends per 5 minutes")
+        (team.directory(ids["C"]) / "commander.log").write_text("")
+
+        # watcher: counts only, 5 s batch, 30 s floor, short waits dropped
+        notices = []
+        with patch.object(team, "send_claude_event", lambda endpoint, body: notices.append(body)):
+            team.write_private_json(team.directory(ids["C"]) / "delivery-endpoint.json",
+                                    {"session_id": ids["C"], "socket": "uds:/none", "token": None})
+            state = {"previous": {c["id"]: c["state"] for c in team.live_chats(ids["C"])},
+                     "pending": {"waiting": set(), "finished": set(), "exited": set()}, "first": 0, "sent": 0}
+            registry("B", ids["B"], "idle", ago=0)
+            team.watch_step(ids["C"], state, 100)
+            assert notices == []
+            team.watch_step(ids["C"], state, 106)
+            assert notices == ["Commander chat event (automated notice; not user input or approval). "
+                               "waiting=0 finished=1 exited=0. Call chat_list."], notices
+            registry("B", ids["B"], "waiting", ago=0)
+            team.watch_step(ids["C"], state, 108)
+            team.watch_step(ids["C"], state, 114)
+            assert len(notices) == 1
+            team.watch_step(ids["C"], state, 140)
+            assert "waiting=1" in notices[-1] and len(notices) == 2
+            registry("B", ids["B"], "idle", ago=0)
+            team.watch_step(ids["C"], state, 150)
+            registry("B", ids["B"], "waiting", ago=0)
+            team.watch_step(ids["C"], state, 160)
+            registry("B", ids["B"], "idle", ago=0)
+            team.watch_step(ids["C"], state, 165)
+            team.watch_step(ids["C"], state, 200)
+            assert len(notices) == 2
+            listed["v"].discard("team-" + ids["X"])
+            team.watch_step(ids["C"], state, 300)
+            team.watch_step(ids["C"], state, 306)
+            assert "exited=1" in notices[-1] and len(notices) == 3
+            assert not any(word in " ".join(notices) for word in ("plain", "fix the thing", "new reply"))
+        listed["v"].add("team-" + ids["X"])
+
+    # unlock comes from the launch flag only: a commander record without --commander has no chat_* tools
+    def tool_names(*flag, caller):
+        with subprocess.Popen([sys.executable, str(team.SCRIPT), "mcp", "--supervisor", caller, *flag],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                              env={**os.environ, "NVIM_TEAM_HOME": str(team.ROOT), "NVIM_TEAM_TMUX": "cmdtest-none"}) as server:
+            out, _ = server.communicate(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n", timeout=20)
+        return [t["name"] for t in json.loads(out.splitlines()[0])["result"]["tools"]]
+    assert tool_names("--commander", caller=ids["C"]) == ["chat_list", "chat_read", "chat_send"]
+    assert "chat_send" not in tool_names(caller=ids["C"]) and len(tool_names(caller=ids["A"])) == 7
+    try:
+        team.dispatch(ids["A"], "chat_list", {})
+    except ValueError as error:
+        assert "commander launch" in str(error)
+    else:
+        raise AssertionError("chat_list without the launch flag")
+    try:
+        team.dispatch(ids["C"], "chat_list", {})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("role in agent.json must not unlock chat tools")
+    try:
+        team.dispatch(ids["C"], "team_start", {"name": "x", "brief": "y"})
+    except ValueError as error:
+        assert "cannot run team tools" in str(error)
+    else:
+        raise AssertionError("commander ran team_start")
+    assert team.read(ids["C"])["role"] == "commander"
+    team.COMMANDER = True
+    try:
+        team.dispatch(ids["C"], "team_start", {"name": "x", "brief": "y"})
+    except ValueError as error:
+        assert "cannot run team tools" in str(error)
+    else:
+        raise AssertionError("commander ran team_start")
+    finally:
+        team.COMMANDER = False
+
+    # launch settings for the commander: restricted tools, ask rule, prompt file, MCP flag
+    command = team.supervisor_command(team.read(ids["C"]), False)
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert "ask" not in settings["permissions"] and "mcp__nvim_team__chat_send" in settings["permissions"]["allow"]
+    assert {"Bash", "Write", "Edit", "Monitor", "Agent", "WebFetch", "WebSearch", "SendMessage"} <= set(settings["permissions"]["deny"])
+    assert command[command.index("--tools") + 1] == "Read,Skill,ToolSearch" and "--strict-mcp-config" in command
+    assert Path(command[command.index("--append-system-prompt-file") + 1]).is_file()
+    servers = json.loads(command[command.index("--mcp-config") + 1])["mcpServers"]["nvim_team"]
+    assert servers["args"][-1] == "--commander" and servers["env"]["NVIM_TEAM_TMUX"] == team.TMUX_SOCKET
+    plain = team.supervisor_command(team.read(ids["A"]), False)
+    assert not {"--tools", "--strict-mcp-config", "--append-system-prompt-file"} & set(plain)
+    assert "permissions" not in json.loads(plain[plain.index("--settings") + 1])
+    assert "--commander" not in json.loads(plain[plain.index("--mcp-config") + 1])["mcpServers"]["nvim_team"]["args"]
+
+    # launch: role is set only on a new record, claude only, one commander
+    with patch.dict(os.environ), patch.object(team.os, "execvp"):
+        os.environ.pop("NVIM_TEAM_DELIVERY", None)
+        with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1, stdout="")):
+            try:
+                team.launch("codex-bf", str(uuid.uuid4()), "commander")
+            except ValueError as error:
+                assert "plain claude" in str(error)
+            else:
+                raise AssertionError("codex commander")
+            with patch.object(team, "running", return_value=[{"id": ids["C"], "role": "commander"}]):
+                try:
+                    team.launch("claude", str(uuid.uuid4()), "commander")
+                except ValueError as error:
+                    assert "already running" in str(error)
+                else:
+                    raise AssertionError("second commander")
+            new = str(uuid.uuid4())
+            team.launch("claude", new, "commander")
+            assert team.read(new)["role"] == "commander" and (team.directory(new) / "name").read_text() == "Commander\n"
+            again = str(uuid.uuid4())
+            team.launch("claude", again, "chat")
+            assert team.read(again)["role"] == "chat"
+            # terminal-features: appended when RGB is missing, left alone when present
+            for shown, appended in (("", True), ("xterm*:RGB\n", False)):
+                with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1, stdout=shown)) as feature_tmux:
+                    team.launch("claude", str(uuid.uuid4()))
+                assert (("set-option", "-sa", "terminal-features", "xterm*:RGB") in
+                        [c.args[:4] for c in feature_tmux.call_args_list]) is appended, shown
+        # personal-account boundary: the commander refuses a non-~/.claude config dir, at launch and in the MCP server
+        for config in ("~/.claude-personal", "/tmp/elsewhere"):
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config}):
+                for call, args in ((team.launch, ("claude", str(uuid.uuid4()), "commander")), (team.mcp, (ids["C"],))):
+                    team.COMMANDER = call is team.mcp
+                    try:
+                        call(*args)
+                    except (ValueError, SystemExit) as error:
+                        assert "only serves the ~/.claude account" in str(error) and "CLAUDE_CONFIG_DIR" in str(error), error
+                    else:
+                        raise AssertionError((config, call))
+                    finally:
+                        team.COMMANDER = False
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(team.CLAUDE_DIR)}):
+            assert team.foreign_config() is None
+    with patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1)):
+        team.manage_team(new, "delete")
+    assert not team.directory(new).exists()
 print("Team question/resume, ownership, stop, malformed output, MCP, and persistence checks passed")

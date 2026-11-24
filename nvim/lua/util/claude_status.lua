@@ -30,7 +30,7 @@ function M.poll(chats, callback, done)
   local home = M.home()
   for _, chat in ipairs(chats) do
     if vim.api.nvim_buf_is_valid(chat.buf) then
-      local state = "unknown"
+      local state, active = "unknown", nil
       local meta = vim.b[chat.buf].snacks_terminal
       local id = meta and meta.env and meta.env.NVIM_TEAM_SESSION
       if id then
@@ -38,15 +38,18 @@ function M.poll(chats, callback, done)
         record = ok and type(record) == "table" and record or {}
         if (record.backend or ""):match("^codex") then
           state = record.chat_status or "unknown"
+          active = tonumber(record.chat_status_at)
         else
           local session = by_id[record.session_id or id]
           state = session and session.status or "unknown"
+          active = session and tonumber(session.statusUpdatedAt) and session.statusUpdatedAt / 1000
         end
       end
       if vim.b[chat.buf].claude_chat_exited then
         state = "exited"
       end
-      callback(chat, state)
+      -- `active`: when the chat's state last changed, in epoch seconds.
+      callback(chat, state, active)
     end
   end
   done()

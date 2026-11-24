@@ -228,7 +228,7 @@ launcher logs into Atlassian before each new or resumed Codex process
 and stops if login fails; attaching to a running process skips login). The
 `codex mcp list --json` auth status is `unknown`, so it cannot reliably skip
 login for already-authenticated servers. Claude
-workers accept `mcp_config` (file path or JSON) for extra MCP servers; claude.ai
+workers accept `mcp_config` (the name of a user-approved config in `~/.config/nvim-agents/mcp/<name>.json`) for extra MCP servers; claude.ai
 connectors are unavailable in headless mode. Workers share the supervisor's directory by default. For concurrent
 writers, the supervisor must supply separate existing worktree directories;
 this version does not create or merge worktrees automatically.
@@ -271,3 +271,18 @@ Run the isolated UI check from the nvim directory:
     nvim --headless -u NONE -l scripts/check-agents.lua
 
 The check launches local `cat` terminals instead of AI agents.
+
+## Commander chat
+
+`<leader>ck` opens the one commander chat (plain `claude`). It starts one if none runs and reopens the live one. A second one is refused. Sidebar `d` deletes it like any chat.
+
+- It reads live chats on the agent tmux server that run under `~/.claude`, and Codex chats read-only. It does not see `~/.claude-personal` chats, workers or itself.
+- Tools: `chat_list` (first call all chats, later calls only changes), `chat_read` (transcript or screen), `chat_send`. The rules are in `scripts/commander.md`, passed with `--append-system-prompt-file`, so they survive `/clear`.
+- The commander launches with `--tools Read,Skill,ToolSearch`, `--strict-mcp-config`, deny rules for Bash, Write, Edit, Monitor, Agent, web tools and `SendMessage`, and an MCP server started with `--commander`. The chat tools unlock from that flag only, never from `role` in `agent.json`. A commander cannot call team tools.
+- `chat_send` runs without a permission prompt: the launch `--settings` allow it. The commander sends only when Byron's own message asks for it, and the send guards (idle screen, text limits, rate limit, audit log) still apply.
+- Send path: one line, at most 500 characters, 3 items and 1200 characters per call, starts with an ASCII letter, no control or format characters, tagged `[commander] `. Each item needs the full chat id and the current name. Refused: Codex chats, chats that are not `idle` (`shell` means a background shell task runs), a dialog, a non-empty input box, tmux copy mode, duplicate names, text copying 40+ characters of text it just read, and rate limits (1 per chat per 30 s, 10 per 5 min).
+- Before typing it reads the screen twice, at least 2 s apart, and needs the plain idle layout. The text goes in as one bracketed paste. After 0.3 s the input box must hold exactly that text, with no dialog and no copy mode. Only then it sends `Enter`. Otherwise the text stays in the box and the result says so.
+- Residual risk: a dialog that opens in the milliseconds before `Enter` gets `Enter`. Your approval is the gate. Your own grid reply into the same chat can mix with a send. Any chat runs as your user and can still reach every file and socket the commander reads.
+- Watcher notices: into waiting, a finished turn (`working` to `idle` or `shell`), exited. At most one per 30 s. Counts only, no chat text.
+- Audit: `<NVIM_TEAM_HOME>/<commander id>/commander.log`, JSON lines with the full text, its sha256 and the hash of the previous line.
+- `NVIM_TEAM_TMUX=<name>` points the scripts and the grid at another tmux server (default `nvim-agents`). Tests use it.

@@ -142,8 +142,9 @@ existing worktrees. Start with one worker unless independent work warrants more.
 Workers do not share your conversation: put the relevant context in the task and
 keep the brief current. Codex workers use the MCP servers and plugins in
 `~/.codex`; Claude workers see only user-level servers and never claude.ai
-connectors, so pass `mcp_config` (a file path or JSON) to `worker_start` when a
-planner or reviewer needs more, or export the data to files in the workspace and
+connectors, so pass `mcp_config` (the name of a config the user placed in
+`~/.config/nvim-agents/mcp/<name>.json`; ask them to add one) to `worker_start`
+when a planner or reviewer needs more, or export the data to files in the workspace and
 point the worker at them. Any existing directory works as a worker `cwd`.
 
 Read the supervisor metadata returned by `team_status` before choosing how to

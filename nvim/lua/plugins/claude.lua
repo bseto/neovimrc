@@ -9,8 +9,10 @@
 --   <leader>cR   rename the current (or last-used) chat
 --   <leader>c1-9 jump straight to chat 1..9
 --   <leader>c0   open the next chat needing you (waiting, then unread)
---   <leader>cL   switch chats between the popup and a right-hand panel
+--   <leader>cL   switch chats between fullscreen and a right-hand panel
 --   <leader>cb   show/hide the agent list
+--   <leader>ck   open the commander chat (reads and replies to your other chats)
+--   <leader>cg   show/hide the grid of all chats (also <C-.>, works inside a chat)
 --   <C-,>        toggle the last-used chat (creates Chat 1 if none exist)
 local keys = {
   {
@@ -35,6 +37,13 @@ local keys = {
     desc = "Chat: new chat",
   },
   {
+    "<leader>ck",
+    function()
+      require("util.claude").commander()
+    end,
+    desc = "Chat: commander",
+  },
+  {
     "<leader>cR",
     function()
       require("util.claude").rename()
@@ -53,7 +62,7 @@ local keys = {
     function()
       require("util.claude").toggle_layout()
     end,
-    desc = "Chat: popup / right panel",
+    desc = "Chat: fullscreen / right panel",
   },
   {
     "<leader>cb",
@@ -61,6 +70,21 @@ local keys = {
       require("util.claude").toggle_sidebar()
     end,
     desc = "Chat: show/hide agent list",
+  },
+  {
+    "<leader>cg",
+    function()
+      require("util.claude").grid()
+    end,
+    desc = "Chat: grid of all chats",
+  },
+  {
+    "<C-.>",
+    function()
+      require("util.claude").grid()
+    end,
+    desc = "Chat: grid of all chats",
+    mode = { "n", "t" },
   },
   {
     "<C-,>",

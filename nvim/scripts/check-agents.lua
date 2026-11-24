@@ -1,3 +1,4 @@
+vim.env.NVIM_TEAM_TMUX = "cmdtest-lua"
 vim.opt.rtp:prepend(vim.fn.getcwd())
 vim.opt.rtp:append(vim.fn.stdpath("data") .. "/lazy/snacks.nvim")
 vim.o.columns = 140
@@ -15,7 +16,10 @@ vim.fn.writefile(
   status_home .. "/launch-id/agent.json"
 )
 local session_file = vim.fn.tempname()
-vim.fn.writefile({ vim.json.encode({ sessionId = "after-clear", kind = "interactive", status = "waiting" }) }, session_file)
+vim.fn.writefile(
+  { vim.json.encode({ sessionId = "after-clear", kind = "interactive", status = "waiting" }) },
+  session_file
+)
 local glob = vim.fn.glob
 vim.fn.glob = function()
   return { session_file }
@@ -146,8 +150,24 @@ vim.system = function(cmd, _, callback)
     code = 0,
     stdout = vim.json.encode({
       { id = first_session, backend = "claude", name = "x", attached = 1 },
-      { id = fake_id, backend = "claude", name = "claude chat", role = "chat", cwd = "/work/app", created = os.time(), attached = 0 },
-      { id = "unnamed-id", backend = "claude", name = "claude chat", role = "chat", cwd = "/work/infra", created = os.time() - 3 * 3600, attached = 0 },
+      {
+        id = fake_id,
+        backend = "claude",
+        name = "claude chat",
+        role = "chat",
+        cwd = "/work/app",
+        created = os.time(),
+        attached = 0,
+      },
+      {
+        id = "unnamed-id",
+        backend = "claude",
+        name = "claude chat",
+        role = "chat",
+        cwd = "/work/infra",
+        created = os.time() - 3 * 3600,
+        attached = 0,
+      },
     }),
   })
 end
@@ -252,15 +272,19 @@ local repo = vim.fn.tempname()
 vim.fn.mkdir(repo, "p")
 repo = vim.uv.fs_realpath(repo)
 vim.fn.mkdir(team_home .. "/" .. first_session, "p")
-vim.fn.writefile({ vim.json.encode({ id = first_session, backend = "claude", cwd = repo }) },
-  team_home .. "/" .. first_session .. "/agent.json")
+vim.fn.writefile(
+  { vim.json.encode({ id = first_session, backend = "claude", cwd = repo }) },
+  team_home .. "/" .. first_session .. "/agent.json"
+)
 agent.refresh_all()
 local saved = vim.json.decode(vim.fn.readfile(team_home .. "/open-chats.json")[1])
 assert(vim.deep_equal(saved[repo], { first_session }))
 local resumed_id = "11111111-1111-1111-1111-111111111111"
 vim.fn.mkdir(team_home .. "/" .. resumed_id, "p")
-vim.fn.writefile({ vim.json.encode({ id = resumed_id, backend = "claude", cwd = repo }) },
-  team_home .. "/" .. resumed_id .. "/agent.json")
+vim.fn.writefile(
+  { vim.json.encode({ id = resumed_id, backend = "claude", cwd = repo }) },
+  team_home .. "/" .. resumed_id .. "/agent.json"
+)
 saved[repo] = { first_session, resumed_id }
 vim.fn.writefile({ vim.json.encode(saved) }, team_home .. "/open-chats.json")
 vim.cmd.stopinsert()
@@ -273,8 +297,204 @@ local resumed = vim.iter(Snacks.terminal.list()):find(function(t)
 end)
 assert(resumed and #Snacks.terminal.list() == before + 1)
 vim.fn.jobstop(vim.b[resumed.buf].terminal_job_id)
+-- Grid: the footer shows context used, and cards keep their places while the reply bar is open.
+local real_tmpdir = vim.env.TMPDIR
+local ctx_tmp = vim.fn.tempname()
+vim.fn.mkdir(ctx_tmp, "p")
+vim.env.TMPDIR = ctx_tmp
+vim.fn.writefile(
+  { vim.json.encode({ id = first_session, backend = "claude", session_id = "ctx-session" }) },
+  team_home .. "/" .. first_session .. "/agent.json"
+)
+vim.fn.writefile({ vim.json.encode({ used_pct = 42 }) }, ctx_tmp .. "/claude-ctx-ctx-session.json")
+status_callback({ buf = first.buf }, "idle")
+status_callback({ buf = second.buf }, "busy")
+agent.open(1)
+agent.hide()
+agent.grid()
+local function card(name)
+  return vim.iter(vim.api.nvim_list_wins()):find(function(win)
+    local config = vim.api.nvim_win_get_config(win)
+    local title = config.zindex == 50 and config.title
+    return type(title) == "table"
+      and vim.iter(title):any(function(chunk)
+        return chunk[1]:find(name, 1, true) ~= nil
+      end)
+  end)
+end
+local fix_auth = card("Fix auth")
+local footer = vim.api.nvim_win_get_config(fix_auth).footer
+assert(footer[1][1] == " Idle " and footer[2][1] == "42% ", vim.inspect(footer))
+assert(vim.api.nvim_win_get_config(card("Chat 2")).footer[2] == nil)
+assert(vim.api.nvim_win_get_position(fix_auth)[2] > 2) -- not in the first slot yet
+vim.api.nvim_set_current_win(fix_auth)
+vim.fn.maparg("a", "n", false, true).callback()
+local input = vim.api.nvim_get_current_win()
+assert(vim.bo[vim.api.nvim_win_get_buf(input)].filetype == "snacks_input")
+status_callback({ buf = first.buf }, "waiting") -- would sort it into the first slot
+agent.refresh_all()
+assert(card("Fix auth") == fix_auth)
+vim.cmd.stopinsert()
+vim.api.nvim_win_close(input, true)
+agent.grid()
+status_callback({ buf = first.buf }, "idle")
+-- Grid size keys, the hidden count, and the usage bar (a window that has reset is left out).
+vim.fn.writefile({
+  vim.json.encode({
+    five_hour = { used_percentage = 34, resets_at = os.time() + 3600 },
+    seven_day = { used_percentage = 90, resets_at = os.time() - 1 },
+  }),
+}, ctx_tmp .. "/claude-usage.json")
+local function bar_text(row)
+  local bg = vim.iter(vim.api.nvim_list_wins()):find(function(win)
+    return vim.api.nvim_win_get_config(win).zindex == 40
+  end)
+  local buf = vim.api.nvim_win_get_buf(bg)
+  row = row < 0 and vim.api.nvim_buf_line_count(buf) + row or row
+  local text = ""
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, { row, 0 }, { row, -1 }, { details = true })) do
+    for _, chunk in ipairs(mark[4].virt_text or {}) do
+      text = text .. chunk[1]
+    end
+  end
+  return text
+end
+local function cards()
+  return #vim.tbl_filter(function(win)
+    return vim.api.nvim_win_get_config(win).zindex == 50
+  end, vim.api.nvim_list_wins())
+end
+local function press(lhs)
+  vim.api.nvim_feedkeys(vim.keycode(lhs), "xt", false)
+end
+agent.grid()
+assert(cards() == 4 and bar_text(0):find("grid 3×2", 1, true), bar_text(0))
+local usage = bar_text(-1)
+assert(usage:find("5h ▰▰▰▱▱▱▱▱ 34%", 1, true) and not usage:find("week", 1, true), usage)
+press("-")
+assert(cards() == 3 and bar_text(0):find("grid 3×1", 1, true) and bar_text(0):find("page 1/2", 1, true), bar_text(0))
+press("]")
+assert(cards() == 1 and bar_text(0):find("page 2/2", 1, true), bar_text(0))
+press("]")
+assert(bar_text(0):find("page 2/2", 1, true), bar_text(0))
+press("[")
+assert(cards() == 3 and bar_text(0):find("page 1/2", 1, true), bar_text(0))
+press("j") -- j on the last row goes to the next page, k on the first row back
+assert(bar_text(0):find("page 2/2", 1, true), bar_text(0))
+press("k")
+assert(bar_text(0):find("page 1/2", 1, true), bar_text(0))
+press(">")
+assert(cards() == 4 and bar_text(0):find("grid 4×1", 1, true), bar_text(0))
+assert(vim.json.decode(vim.fn.readfile(team_home .. "/grid-shape.json")[1]).cols == 4)
+press("=")
+assert(cards() == 4 and bar_text(0):find("grid 3×2", 1, true), bar_text(0))
+-- Sort modes: o cycles attention, recent, manual; m moves a chat to a place, s swaps two.
+local function on_screen()
+  local wins = vim.tbl_filter(function(win)
+    return vim.api.nvim_win_get_config(win).zindex == 50
+  end, vim.api.nvim_list_wins())
+  table.sort(wins, function(a, b)
+    local pa, pb = vim.api.nvim_win_get_position(a), vim.api.nvim_win_get_position(b)
+    return pa[1] < pb[1] or pa[1] == pb[1] and pa[2] < pb[2]
+  end)
+  return table.concat(vim.tbl_map(function(win)
+    for _, chunk in ipairs(vim.api.nvim_win_get_config(win).title) do
+      if chunk[1]:match("^%d+ $") then
+        return vim.trim(chunk[1])
+      end
+    end
+  end, wins))
+end
+for _, t in ipairs(Snacks.terminal.list()) do
+  vim.b[t.buf].claude_chat_active = ({ 200, 50, 300, 100 })[vim.b[t.buf].snacks_terminal.id]
+end
+press("o")
+assert(on_screen() == "3142" and bar_text(0):find("sort: recent", 1, true), on_screen() .. bar_text(0))
+press("o")
+assert(on_screen() == "3142" and bar_text(0):find("sort: manual", 1, true), on_screen())
+for _, lhs in ipairs({ "k", "h", "h", "j", "m" }) do -- top left, then down to chat 2
+  press(lhs)
+end
+assert(bar_text(0):find("pick its new place", 1, true), bar_text(0))
+press("k")
+press("m")
+assert(on_screen() == "2314", on_screen())
+for _, lhs in ipairs({ "s", "l", "l", "s" }) do -- swap chat 2 (now top left) with chat 1
+  press(lhs)
+end
+assert(on_screen() == "1324", on_screen())
+press("m")
+press("<Esc>")
+assert(not bar_text(0):find("pick its new place", 1, true) and on_screen() == "1324")
+assert(vim.json.decode(vim.fn.readfile(team_home .. "/grid-sort.json")[1]).mode == "manual")
+press("o")
+assert(bar_text(0):find("sort: attention", 1, true), bar_text(0))
+-- At 45 lines, 7 and 8 rows round to the same card height: + stops at 7, and - always shows a change.
+for _ = 1, 10 do
+  press("+")
+end
+assert(bar_text(0):find("grid 3×7", 1, true), bar_text(0))
+press("-")
+assert(bar_text(0):find("grid 3×6", 1, true), bar_text(0))
+press("(")
+assert(bar_text(0):find("grid 3×5", 1, true), bar_text(0))
+press(")")
+assert(bar_text(0):find("grid 3×6", 1, true), bar_text(0))
+press("=")
+agent.grid()
+vim.env.TMPDIR = real_tmpdir
 vim.fn.jobstop(first_job)
 vim.fn.jobstop(vim.b[reopened].terminal_job_id)
 vim.fn.jobstop(vim.b[second.buf].terminal_job_id)
+-- Commander: starts one with the role in env, then reopens it instead of starting a second.
+local commander_system = vim.system
+vim.system = function(_, _, callback)
+  callback({ code = 0, stdout = "[]" })
+end
+local function commander_buf()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local meta = vim.b[buf].snacks_terminal
+    if type(meta) == "table" and meta.env and meta.env.NVIM_TEAM_ROLE == "commander" then
+      return buf, meta
+    end
+  end
+end
+agent.commander()
+assert(vim.wait(1000, commander_buf))
+local commander, commander_meta = commander_buf()
+assert(commander_meta.cmd:find("launch --backend claude", 1, true))
+assert(vim.b[commander].claude_chat_name == "Commander")
+local commander_session = commander_meta.env.NVIM_TEAM_SESSION
+vim.fn.mkdir(team_home .. "/" .. commander_session, "p")
+vim.fn.writefile(
+  { vim.json.encode({ id = commander_session, role = "commander", backend = "claude" }) },
+  team_home .. "/" .. commander_session .. "/agent.json"
+)
+-- The commander gets the full-height left column; h from the first card column moves to it.
+agent.grid()
+local chief = card("chief of staff")
+local chief_config = vim.api.nvim_win_get_config(chief)
+assert(chief_config.col == 2 and chief_config.height == vim.o.lines - vim.o.cmdheight - 6, vim.inspect(chief_config))
+vim.api.nvim_set_current_win(chief)
+press("l")
+assert(vim.api.nvim_get_current_win() ~= chief)
+press("h")
+assert(vim.api.nvim_get_current_win() == chief)
+agent.grid()
+local function chat_count()
+  local n = 0
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    local meta = vim.b[buf].snacks_terminal
+    if type(meta) == "table" and meta.env and meta.env.NVIM_TEAM_SESSION then
+      n = n + 1
+    end
+  end
+  return n
+end
+local commander_before = chat_count()
+agent.commander()
+assert(chat_count() == commander_before)
+vim.system = commander_system
+vim.fn.jobstop(vim.b[commander].terminal_job_id)
 print("Agent sidebar checks passed")
 vim.cmd("qa!")
