@@ -1157,7 +1157,7 @@ def chat_send(caller, messages):
 OPTION = re.compile(r"^(?:❯\s*)?(\d)\.\s+(.+?)\s*$")
 # Backstop for Byron's hard stops: a "Yes" to these prompts goes to Byron, whatever the commander decides.
 HARD_STOP = re.compile(r"\bgh\s+pr\s+(merge|ready)\b|\b(terraform|tofu)\s+(plan|apply)\b|\batmos\s+terraform\b"
-                       r"|\brm\s|\bgit\s+branch\s+-D\b|\bkubectl\s+delete\b|\bdelete-|slack"
+                       r"|\brm\s|\bgit\s+branch\s+-[dD]\b|\bkubectl\s+delete\b|\bdelete-|slack"
                        r"|\beval\b|base64|\b(ba|z)?sh\s+-c\b|\|\s*(ba|z)?sh\b", re.I)
 
 
@@ -1287,6 +1287,34 @@ def comment_problem(tokens):
     return None
 
 
+GIT_SUBCOMMANDS = {"add", "commit", "status", "diff", "log", "show", "fetch", "pull", "checkout", "switch", "branch",
+                   "restore", "stash", "rebase", "merge", "cherry-pick", "rev-parse", "ls-files", "grep", "blame",
+                   "worktree", "tag", "remote", "config", "reset", "push"}
+PUSH_COMPANIONS = {"add", "commit", "status", "diff", "log", "push"}
+GH_READ = {("pr", "view"), ("pr", "list"), ("pr", "diff"), ("pr", "checks"), ("pr", "status"), ("pr", "checkout"),
+           ("pr", "create"), ("pr", "comment"), ("issue", "view"), ("issue", "list"), ("run", "view"), ("run", "list"),
+           ("run", "watch"), ("repo", "view")}
+
+
+def git_gh_problem(tokens):
+    """None for a git or gh command on the allow-list. Git aliases, global options (-c, -C, ...) and run-time words
+    could hide a push or merge, so they go to Byron."""
+    if any(re.search(r"[$`]", t) for t in tokens):
+        return "a git/gh word that is built at run time"
+    if len(tokens) < 2 or tokens[1].startswith("-"):
+        return "git/gh options before the subcommand"
+    if os.path.basename(tokens[0]) == "git":
+        return None if tokens[1] in GIT_SUBCOMMANDS else f"git {tokens[1]} is not on the allow-list (aliases go to Byron)"
+    if tokens[1] == "api":
+        writes = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
+        return "gh api with a write option" if writes & {t.split("=")[0] for t in tokens} else None
+    if tuple(tokens[1:3]) not in GH_READ:
+        return f"gh {' '.join(tokens[1:3])} is not on the allow-list"
+    if tokens[1:3] == ["pr", "create"] and not {"--draft", "-d"} & set(tokens):
+        return "gh pr create without --draft"
+    return None
+
+
 def hard_stop_reason(block, calls):
     """Why a Yes would start a hard stop, or None. Allowed: a git push to a branch with an open PR (never main/master,
     never forced) and a 'terrateam plan' PR comment. Whitespace and control characters count as spaces."""
@@ -1305,29 +1333,36 @@ def hard_stop_reason(block, calls):
         if risky and (parsed is None or re.search(r"\$\(|`|<\(", command)):
             return "git push or gh comment inside a command that cannot be checked"
         placed = 0
+        has_push = False
         for tokens in parsed or []:
             if any(re.search(r"(git|gh)[\x00-\x20\x7f]+(push|pr|comment)", t) for t in tokens):
                 return "git push or gh comment hidden inside one shell word"
             if tokens and re.search(r"[$`]", tokens[0]):
                 return "a command whose name is built at run time"
             names = [os.path.basename(t) for t in tokens]
-            if "git" in names and "push" in tokens[names.index("git") + 1:]:
-                if names.index("git") != 0 or "cd" in [p[0] for p in parsed if p]:
-                    return "git push must be a plain `git push ...` command, with no cd"
-                others = [p[1] for p in parsed if p and os.path.basename(p[0]) == "git" and p is not tokens and len(p) > 1]
-                if set(others) - {"add", "commit", "status", "diff", "log"}:
-                    return "other git commands next to the push (remote, config, ...) go to Byron"
+            if any(n in ("git", "gh") for n in names[1:]):
+                return "git or gh run through another command or as an argument"
+            if names and names[0] in ("git", "gh"):
+                problem = git_gh_problem(tokens)
+                if problem:
+                    return problem
+            if names[:1] == ["git"] and tokens[1] == "push":
                 problem = push_problem(tokens, call["cwd"])
                 if problem:
                     return problem
-                approved_push, placed = True, placed + 1
-            if "gh" in names and "comment" in tokens[names.index("gh") + 1:]:
-                if names.index("gh") != 0:
-                    return "gh comment must be a plain `gh pr comment ...` command"
+                has_push, placed = True, placed + 1
+            if names[:1] == ["gh"] and tokens[1:3] == ["pr", "comment"]:
                 problem = comment_problem(tokens)
                 if problem:
                     return problem
                 placed += 1
+        if has_push:
+            # Only the push and plain local git steps may share the call: no cd, other commands or redirects.
+            for tokens in parsed:
+                if os.path.basename(tokens[0]) != "git" or tokens[1] not in PUSH_COMPANIONS or \
+                        any(t in ("<", ">", ">>", ">&", "&>") for t in tokens):
+                    return "a push shares its command with something other than git add/commit/status/diff/log"
+            approved_push = True
         if risky and not placed:
             return "git push or gh comment text that the parser cannot place"
     if GIT_PUSH.search(flat(block)) and not approved_push:

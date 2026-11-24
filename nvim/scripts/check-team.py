@@ -870,16 +870,17 @@ else:
             for allowed in ("git push origin feature-x", "git push -u origin HEAD",
                             "git push origin feature-x:feature-x", 'gh pr comment 12 --body "terrateam plan"',
                             "gh pr comment 12 -b 'terrateam plan dir:terraform/x workspace:default'",
-                            'git commit -m "fix consumer" && git push origin feature-x'):
+                            'git commit -m "fix consumer" && git push origin feature-x',
+                            "gh pr create --draft --title x", "gh api repos/x/y/pulls"):
                 assert approve(allowed)["result"] == "answered", (allowed, approve(allowed))
             for refused_command, why in (
                     ("git push origin no-pr", "no open PR"), ("git push origin main", "push to main"),
                     ("git push origin HEAD:master", "push to master"), ("git push -f origin feature-x", "options"),
                     ("git push --force-with-lease", "options"), ("git push origin +feature-x", "force push"),
                     ("git push origin :feature-x", "deleting"), ("git push --delete origin feature-x", "options"),
-                    ("git push upstream feature-x", "other than origin"), ("git -c a=b push origin feature-x", "plain"),
-                    ("/usr/bin/git push origin main", "plain"), ("xargs git push origin feature-x", "plain"),
-                    ("echo $(git push origin feature-x)", "cannot be checked"), ("cd /tmp && git push origin feature-x", "no cd"),
+                    ("git push upstream feature-x", "other than origin"), ("git -c a=b push origin feature-x", "options before"),
+                    ("/usr/bin/git push origin main", "plain"), ("xargs git push origin feature-x", "another command"),
+                    ("echo $(git push origin feature-x)", "cannot be checked"), ("cd /tmp && git push origin feature-x", "shares its command"),
                     ("git\tpush origin main", "push to main"), ("printf x; git\x0bpush", "one shell word"),
                     ('gh pr comment 12 --body "terrateam apply"', "terrateam plan"),
                     ('gh pr comment 12 --body "terrateam plan; terrateam apply"', "terrateam plan"),
@@ -888,7 +889,13 @@ else:
                     ("tofu apply", "hard stop"), ("printf x#; git push origin main", "push to main"),
                     ("G=git; $G push origin main", "built at run time"), ("git push", "name the branch"),
                     ("git push origin", "name the branch"), ('git commit -m "fix push"', "cannot place"),
-                    ("git remote set-url origin x && git push origin feature-x", "other git commands")):
+                    ("git remote set-url origin x && git push origin feature-x", "shares its command"),
+                    ("X=push; git $X origin main", "built at run time"),
+                    ('git -c alias.p=pu""sh p origin main', "options before"), ("git p origin main", "allow-list"),
+                    ("git push origin feature-x && echo done", "shares its command"),
+                    ("git push origin feature-x > out.txt", "unexpected"), ("git add . > log.txt && git push origin feature-x", "shares its command"), ("git branch -d old", "hard stop"),
+                    ("gh pr create --title x", "without --draft"), ("gh api -X POST repos/x/y/issues", "write option"),
+                    ("gh pr close 12", "allow-list"), ("gh co 12", "allow-list")):
                 result = approve(refused_command)
                 assert result["result"] == "refused" and why in result["reason"], (refused_command, result)
             # the screen shows a push the transcript does not explain
