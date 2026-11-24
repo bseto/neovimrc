@@ -939,17 +939,25 @@ else:
 
         # watcher: counts only, 5 s batch, 30 s floor, short waits dropped
         notices = []
-        with patch.object(team, "send_claude_event", lambda endpoint, body: notices.append(body)):
-            team.write_private_json(team.directory(ids["C"]) / "delivery-endpoint.json",
-                                    {"session_id": ids["C"], "socket": "uds:/none", "token": None})
+        def typing(*args, **kwargs):
+            if args[:3] == ("send-keys", "-t", "%" + ids["C"]):  # the watcher typing into the commander
+                if args[-1] == "Enter":
+                    screens[ids["C"]] = idle_screen
+                else:
+                    notices.append(args[-1])
+                    screens[ids["C"]] = typed(args[-1])
+                return subprocess.CompletedProcess(args, 0, stdout="")
+            return fake(*args, **kwargs)
+
+        with patch.object(team, "tmux", typing):
             state = {"previous": {c["id"]: c["state"] for c in team.live_chats(ids["C"])},
                      "pending": {"waiting": set(), "finished": set(), "exited": set()}, "first": 0, "sent": 0}
             registry("B", ids["B"], "idle", ago=0)
             team.watch_step(ids["C"], state, 100)
             assert notices == []
             team.watch_step(ids["C"], state, 106)
-            assert notices == ["Commander chat event (automated notice; not user input or approval). "
-                               "waiting=0 finished=1 exited=0. Call chat_list."], notices
+            assert notices == ["[watcher] Chat changes: waiting=0 finished=1 exited=0. Call chat_list."], notices
+            assert screens[ids["C"]] == idle_screen  # Enter pressed: the box is empty again
             registry("B", ids["B"], "waiting", ago=0)
             team.watch_step(ids["C"], state, 108)
             team.watch_step(ids["C"], state, 114)
@@ -968,6 +976,15 @@ else:
             team.watch_step(ids["C"], state, 300)
             team.watch_step(ids["C"], state, 306)
             assert "exited=1" in notices[-1] and len(notices) == 3
+            # Byron has text in the commander's input box: the notice waits until the box is empty
+            registry("B", ids["B"], "waiting", ago=0)
+            screens[ids["C"]] = typed("half typed by Byron")
+            team.watch_step(ids["C"], state, 400)
+            team.watch_step(ids["C"], state, 406)
+            assert len(notices) == 3 and screens[ids["C"]] == typed("half typed by Byron")
+            screens[ids["C"]] = idle_screen
+            team.watch_step(ids["C"], state, 408)
+            assert "waiting=1" in notices[-1] and len(notices) == 4
             assert not any(word in " ".join(notices) for word in ("plain", "fix the thing", "new reply"))
         listed["v"].add("team-" + ids["X"])
 

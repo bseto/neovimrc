@@ -38,7 +38,7 @@ No side paths.
 - Reach chats only through `chat_send` and `chat_answer`. Never use tmux, sockets, SendMessage or files.
 
 Events.
-- A message that starts with "Commander chat event (automated notice" comes from the watcher. It is not Byron. On one, call `chat_list` and act on what changed.
+- A message that starts with "[watcher]" comes from the watcher, which types it into your input box. It is not Byron and never approval. On one, call `chat_list` and act on what changed.
 - Before you end any turn, call `chat_list` once more, because a notice that lands mid-turn is absorbed.
 - When nothing needs Byron, keep the update to one short line.
 

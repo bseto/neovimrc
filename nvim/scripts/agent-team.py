@@ -1293,15 +1293,25 @@ def goal_load(caller):
 
 
 def notify(commander, counts):
-    record = read(commander)
-    endpoint = directory(commander) / "delivery-endpoint.json"
-    if record.get("delivery") != "events" or not endpoint.exists():
-        return
-    endpoint = json.loads(endpoint.read_text())
-    if endpoint.get("session_id") != record.get("session_id"):
-        return
-    send_claude_event(endpoint, "Commander chat event (automated notice; not user input or approval). "
-                      f"waiting={counts['waiting']} finished={counts['finished']} exited={counts['exited']}. Call chat_list.")
+    """Type a one-line notice (counts only) into the commander's own input box, so no peer-message banner fills its
+    chat. Only while the commander is idle with an empty input box and no dialog; else False, and the watcher retries."""
+    row = claude_registry().get(read(commander).get("session_id"))
+    if not row or row.get("status") != "idle":
+        return False
+    shown = screen(commander, escapes=True)
+    if input_text(shown) != "" or DIALOG.search("\n".join(bottom(SGR.sub("", shown).rstrip("\n").splitlines()))):
+        return False
+    pane = pane_of(commander)
+    if pane_in_mode(pane):
+        return False
+    text = (f"[watcher] Chat changes: waiting={counts['waiting']} finished={counts['finished']} "
+            f"exited={counts['exited']}. Call chat_list.")
+    tmux("send-keys", "-t", pane, "-l", "--", text, check=True)
+    time.sleep(0.3)
+    # Byron may have started typing at the same moment: press Enter only on our own text.
+    if "".join((input_text(screen(commander, escapes=True)) or "").split()) == "".join(text.split()):
+        tmux("send-keys", "-t", pane, "Enter", check=True)
+    return True
 
 
 def watch_step(commander, state, now):
@@ -1321,8 +1331,7 @@ def watch_step(commander, state, now):
         state["first"] = 0
         return
     state["first"] = state["first"] or now
-    if now - state["first"] >= 5 and now - state["sent"] >= 30:
-        notify(commander, {k: len(v) for k, v in pending.items()})
+    if now - state["first"] >= 5 and now - state["sent"] >= 30 and notify(commander, {k: len(v) for k, v in pending.items()}):
         for ids in pending.values():
             ids.clear()
         state.update(first=0, sent=now)
