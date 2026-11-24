@@ -1306,13 +1306,43 @@ def git_gh_problem(tokens):
     if os.path.basename(tokens[0]) == "git":
         return None if tokens[1] in GIT_SUBCOMMANDS else f"git {tokens[1]} is not on the allow-list (aliases go to Byron)"
     if tokens[1] == "api":
-        writes = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
-        return "gh api with a write option" if writes & {t.split("=")[0] for t in tokens} else None
+        # Read options only; anything else (-X…, -f…, -F…, -H, --input, ...) could make it a write.
+        flags = flag_words(tokens[2:], {"--jq", "-q"})
+        if flags is None or flags - {"--jq", "-q", "--paginate", "--slurp", "--silent", "--include", "-i", "--verbose"}:
+            return "gh api with an option other than read options (--jq, --paginate, ...)"
+        return None
     if tuple(tokens[1:3]) not in GH_READ:
         return f"gh {' '.join(tokens[1:3])} is not on the allow-list"
-    if tokens[1:3] == ["pr", "create"] and not {"--draft", "-d"} & set(tokens):
-        return "gh pr create without --draft"
+    if tokens[1:3] == ["pr", "create"]:
+        valued = {"--title", "-t", "--body", "-b", "--body-file", "-F", "--base", "-B", "--head", "-H", "--repo", "-R",
+                  "--label", "-l", "--assignee", "-a", "--reviewer", "-r", "--milestone", "-m", "--project", "-p",
+                  "--template", "-T"}
+        flags = flag_words(tokens[3:], valued)
+        known = valued | {"--draft", "-d", "--fill", "-f", "--fill-first", "--fill-verbose", "--no-maintainer-edit"}
+        if flags is None or flags - known:
+            return "gh pr create with an unknown option"
+        if not {"--draft", "-d"} & flags:
+            return "gh pr create without --draft"
     return None
+
+
+def flag_words(args, valued):
+    """The flags in args, skipping the value after each flag in `valued`. None for a flag that ends the list without
+    its value, or an inline `--flag=value` on a flag that takes none."""
+    flags, i = set(), 0
+    while i < len(args):
+        word = args[i]
+        if word.startswith("-"):
+            name, inline, _ = word.partition("=")
+            if inline and name not in valued:
+                return None
+            flags.add(name)
+            if name in valued and not inline:
+                if i + 1 >= len(args):
+                    return None
+                i += 1
+        i += 1
+    return flags
 
 
 def hard_stop_reason(block, calls):

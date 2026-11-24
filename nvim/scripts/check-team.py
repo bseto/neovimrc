@@ -871,7 +871,8 @@ else:
                             "git push origin feature-x:feature-x", 'gh pr comment 12 --body "terrateam plan"',
                             "gh pr comment 12 -b 'terrateam plan dir:terraform/x workspace:default'",
                             'git commit -m "fix consumer" && git push origin feature-x',
-                            "gh pr create --draft --title x", "gh api repos/x/y/pulls"):
+                            "gh pr create --draft --title x", "gh api repos/x/y/pulls",
+                            "gh api --paginate --jq .[].number repos/x/y/pulls", "gh pr create -t '-d' --draft"):
                 assert approve(allowed)["result"] == "answered", (allowed, approve(allowed))
             for refused_command, why in (
                     ("git push origin no-pr", "no open PR"), ("git push origin main", "push to main"),
@@ -894,7 +895,11 @@ else:
                     ('git -c alias.p=pu""sh p origin main', "options before"), ("git p origin main", "allow-list"),
                     ("git push origin feature-x && echo done", "shares its command"),
                     ("git push origin feature-x > out.txt", "unexpected"), ("git add . > log.txt && git push origin feature-x", "shares its command"), ("git branch -d old", "hard stop"),
-                    ("gh pr create --title x", "without --draft"), ("gh api -X POST repos/x/y/issues", "write option"),
+                    ("gh pr create --title x", "without --draft"), ("gh api -X POST repos/x/y/issues", "read options"), ("gh api -XPOST repos/x/y/issues", "read options"),
+                    ("gh api -fbody=x repos/x/y/issues", "read options"), ("gh api --method=POST repos/x", "read options"),
+                    ("gh api -H 'X-HTTP-Method-Override: POST' repos/x", "read options"),
+                    ("gh pr create --title -d", "without --draft"), ("gh pr create -t '--draft' -b x", "without --draft"),
+                    ("gh pr create --draft=false", "unknown option"), ("gh pr create -dw", "unknown option"),
                     ("gh pr close 12", "allow-list"), ("gh co 12", "allow-list")):
                 result = approve(refused_command)
                 assert result["result"] == "refused" and why in result["reason"], (refused_command, result)
