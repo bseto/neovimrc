@@ -678,6 +678,11 @@ local function bars(view)
     vim.list_extend(usage, meter("5h", limits.five_hour, "%H:%M"))
     vim.list_extend(usage, meter("week", limits.seven_day, "%a %H:%M"))
   end
+  local budget = require("util.bifrost_budget")
+  budget.refresh()
+  if budget.spend() then
+    table.insert(usage, { "  " .. budget.spend(), "AgentAccent3" })
+  end
   put(last, usage)
   put(last, { { "c commander · a reply · o sort · ] [ page · < > ( ) = size · ? keys ", "Comment" } }, "right")
 end
@@ -1305,8 +1310,8 @@ local function refresh(win)
       and (" %d %s · %s %s"):format(id, display(win.buf, id), glyph(state), state[2]):gsub("%%", "%%%%")
     or ""
   local meta = vim.b[win.buf].snacks_terminal
-  if meta and type(meta.cmd) == "string" and meta.cmd:find("codex-bf", 1, true) then
-    local budget = require("util.bifrost_budget")
+  local budget = require("util.bifrost_budget")
+  if budget.is_bifrost(meta) then
     budget.refresh()
     win.opts.footer = " " .. budget.text() .. " "
   end

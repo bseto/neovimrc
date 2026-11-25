@@ -133,8 +133,8 @@ backend and model:
 | `qa` | executor | `claude-bf --model sonnet` |
 | `review` | reviewer | the user's choice |
 
-`claude-bf` workers always get an explicit `--model`, because the wrapper forces
-`ANTHROPIC_MODEL=claude-opus-4-8` otherwise. Through Bifrost, `opus` and
+`claude-bf` workers always get an explicit `--model`, because the wrapper pins
+`ANTHROPIC_MODEL=claude-opus-5-5` otherwise. Through Bifrost, `opus` and
 `sonnet` resolve to `claude-opus-5-5` and `claude-sonnet-5-5`. `codex-bf`
 workers default to `gpt-5.6-terra` with medium reasoning. `team_checkpoint`
 changes a route (`routes={"qa": {"backend": "codex-bf"}}`; `{}` resets it), and

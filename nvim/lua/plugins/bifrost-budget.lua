@@ -6,7 +6,7 @@ return {
         return require("util.bifrost_budget").text()
       end,
       cond = function()
-        return require("util.bifrost_budget").is_codex_bifrost()
+        return require("util.bifrost_budget").is_bifrost()
       end,
     })
   end,

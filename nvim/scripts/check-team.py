@@ -1047,7 +1047,7 @@ else:
                 {"id": a[1], "name": "claude chat", "backend": "claude", "role": "chat", "created": time.time()}))):
             result = team.chat_open(ids["C"], "db fix", str(team.ROOT))
             assert result["result"] == "opened" and opened[-1][0][0] == "claude", result
-            assert opened[-1][1] == {"cwd": str(team.ROOT.resolve()), "attach": False}
+            assert opened[-1][1] == {"cwd": str(team.ROOT.resolve()), "attach": False, "clean_env": True}
             assert (team.directory(result["chat_id"]) / "name").read_text() == "db fix\n"
             for name, cwd, why in (("alpha", str(team.ROOT), "already has that name"), ("-x", str(team.ROOT), "name is"),
                                    ("a" * 61, str(team.ROOT), "name is"), ("ok", str(team.ROOT / "missing"), "not a directory"),
@@ -1055,6 +1055,21 @@ else:
                 result = team.chat_open(ids["C"], name, cwd)
                 assert result["result"] == "refused" and why in result["reason"], (name, result)
             assert len(opened) == 1 and json.loads(log.read_text().splitlines()[-1])["tool"] == "chat_open"
+            result = team.chat_open(ids["C"], "bf chat", str(team.ROOT), "claude-bf")
+            assert result["result"] == "opened" and opened[-1][0][0] == "claude-bf" and not opened[-1][1]["clean_env"], result
+            for bad in ("codex-bf", "", None, "claude --x"):
+                result = team.chat_open(ids["C"], "bad backend", str(team.ROOT), bad)
+                assert result["result"] == "refused" and "backend must be" in result["reason"], (bad, result)
+            assert len(opened) == 2
+        # a plain claude chat from chat_open never inherits Bifrost env; claude-bf keeps it
+        with patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "https://x", "ANTHROPIC_AUTH_TOKEN": "t", "ANTHROPIC_MODEL": "m"}), \
+                patch.object(team, "tmux", return_value=subprocess.CompletedProcess([], 1, stdout="")) as launch_tmux, \
+                patch.object(team.os, "execvp"):
+            for backend, clean in (("claude", True), ("claude-bf", False)):
+                team.launch(backend, str(uuid.uuid4()), attach=False, clean_env=clean)
+                env = next(c.kwargs["env"] for c in launch_tmux.call_args_list if c.args[0] == "new-session")
+                assert any(k.startswith("ANTHROPIC_") for k in env) != clean, (backend, sorted(env))
+                launch_tmux.reset_mock()
         # goals survive in a file under the team home
         assert team.goal_load(ids["C"]) == {"goals": []}
         team.goal_save(ids["C"], [{"title": "Ship X", "owner": "alpha", "next": "review"}])

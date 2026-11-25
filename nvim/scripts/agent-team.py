@@ -205,7 +205,7 @@ def foreign_config():
     return value if value and Path(value).expanduser().resolve() != CLAUDE_DIR.resolve() else None
 
 
-def launch(backend, agent_id, role="chat", cwd=None, attach=True):
+def launch(backend, agent_id, role="chat", cwd=None, attach=True, clean_env=False):
     if backend not in BACKENDS:
         raise ValueError("Unsupported supervisor backend")
     if role not in ("chat", "commander"):
@@ -250,16 +250,16 @@ def launch(backend, agent_id, role="chat", cwd=None, attach=True):
         if not is_running:
             command = supervisor_command(record, exists)
             # zsh resolves the user's existing claude/claude-bf functions.
-            env = os.environ.copy()
+            env = worker_environment({**record, "config_dir": ""}) if clean_env else os.environ.copy()
             env.pop("CLAUDECODE", None)
             env.pop("TMUX", None)
             env.pop("NVIM_TEAM_ROLE", None)
             env["NVIM_TEAM_HOME"] = str(ROOT)
             env["COLORTERM"] = "truecolor"
-            if record.get("config_dir"):
+            if record.get("config_dir") and not clean_env:
                 env["CLAUDE_CONFIG_DIR"] = record["config_dir"]
             launch_env = ["-e", "NVIM_TEAM_HOME=" + str(ROOT), "-e", "NVIM_TEAM_TMUX=" + TMUX_SOCKET, "-e", "COLORTERM=truecolor"]
-            if record.get("config_dir"):
+            if record.get("config_dir") and not clean_env:
                 launch_env += ["-e", "CLAUDE_CONFIG_DIR=" + record["config_dir"]]
             tmux("new-session", "-d", "-s", name, "-c", record["cwd"], *launch_env,
                  shlex.join(["zsh", "-c", shlex.join(command)]), env=env, check=True)
@@ -1604,10 +1604,12 @@ def chat_answer(caller, chat_id, chat_name, option=None, question_id=None, answe
     return {k: entry.get(k) for k in keys}
 
 
-def chat_open(caller, name, cwd):
-    """Start a new Claude chat in its own tmux session, named and in cwd. Byron attaches from the chat picker."""
-    entry = {"tool": "chat_open", "name": name, "cwd": cwd, "result": "refused", "reason": None, "chat_id": None}
+def chat_open(caller, name, cwd, backend="claude"):
+    """Start a new Claude chat (plain claude or claude-bf) in its own tmux session, named and in cwd. Byron attaches from the chat picker."""
+    entry = {"tool": "chat_open", "name": name, "cwd": cwd, "backend": backend, "result": "refused", "reason": None, "chat_id": None}
     try:
+        if backend not in ("claude", "claude-bf"):
+            raise ValueError("backend must be claude or claude-bf")
         if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}", name):
             raise ValueError("name is 1-60 characters: letters, digits, space, . _ -; starts with a letter or digit")
         folder = Path(os.path.expanduser(str(cwd))).resolve()
@@ -1621,7 +1623,7 @@ def chat_open(caller, name, cwd):
             raise ValueError("A live chat already has that name")
         rate_check(caller, None, per_chat=False)
         agent_id = entry["chat_id"] = str(uuid.uuid4())
-        launch("claude", agent_id, cwd=str(folder), attach=False)
+        launch(backend, agent_id, cwd=str(folder), attach=False, clean_env=backend == "claude")
         (directory(agent_id) / "name").write_text(name + "\n")
         entry.update(result="opened", cwd=str(folder))
     except Exception as error:
@@ -1982,8 +1984,8 @@ COMMANDER_TOOLS = [
               "options": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1, "maximum": 4}},
               "text": STRING}, "minProperties": 1, "maxProperties": 1, "additionalProperties": False}}},
          ["chat_id", "chat_name"]),
-    tool("chat_open", "Start a new Claude chat (plain claude) named name, in directory cwd (under ~/Documents/workspace, or the folder of a live chat). Use it only when Byron asks for a new chat. It starts in the background; Byron opens it from the chat picker. A folder Claude has not trusted yet shows a trust prompt that only Byron answers. Rate-limited with sends and answers; every open is logged.",
-         {"name": STRING, "cwd": STRING}, ["name", "cwd"]),
+    tool("chat_open", "Start a new Claude chat named name, in directory cwd (under ~/Documents/workspace, or the folder of a live chat). Use it only when Byron asks for a new chat. It starts in the background; Byron opens it from the chat picker. A folder Claude has not trusted yet shows a trust prompt that only Byron answers. Rate-limited with sends and answers; every open is logged.",
+         {"name": STRING, "cwd": STRING, "backend": {"type": "string", "enum": ["claude", "claude-bf"], "description": "claude (default, subscription) or claude-bf (Bifrost, company-billed). Use claude-bf only when Byron asks."}}, ["name", "cwd"]),
     tool("goal_save", "Replace the saved list of Byron's active goals. Call it whenever a goal starts, changes or ends. The list survives a commander restart.",
          {"goals": {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {
              "title": STRING, "owner": STRING, "next": STRING, "done_when": STRING, "notes": STRING},

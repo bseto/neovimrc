@@ -51,7 +51,12 @@ package.loaded["util.claude_status"] = {
     done()
   end,
 }
+local real_budget = require("util.bifrost_budget")
 package.loaded["util.bifrost_budget"] = {
+  is_bifrost = real_budget.is_bifrost,
+  spend = function()
+    return nil
+  end,
   refresh = function() end,
   text = function()
     return "Bifrost $865.97/$900 left (1M)"
@@ -500,5 +505,10 @@ agent.commander()
 assert(chat_count() == commander_before)
 vim.system = commander_system
 vim.fn.jobstop(vim.b[commander].terminal_job_id)
+choice = 2
+agent.new()
+local claude_bf = agent.open(chat_count())
+assert(vim.b[claude_bf.buf].snacks_terminal.cmd:find("--backend claude-bf", 1, true))
+assert(claude_bf.opts.footer:find("Bifrost $865.97/$900", 1, true))
 print("Agent sidebar checks passed")
 vim.cmd("qa!")
