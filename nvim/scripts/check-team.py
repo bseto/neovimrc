@@ -931,6 +931,119 @@ else:
         assert team.chat_send(ids["C"], send("A", "Thanks, carry on"))["results"][0]["result"] == "sent"
         registry("A", sa)
         assert "only a chat waiting" in answer(1)["reason"]
+        # AskUserQuestion: chat_read returns the full input; chat_answer answers each tab, checks the review page, submits
+        ask = [{"header": "Color", "question": "Which color?", "multiSelect": False,
+                "options": [{"label": "Red", "description": "warm"}, {"label": "Blue", "description": "cool"}]},
+               {"header": "Pets", "question": "Which pets?", "multiSelect": True, "options": [
+                   {"label": "Cat", "description": "c"}, {"label": "Dog", "description": "d"}, {"label": "Fish", "description": "f"}]},
+               {"header": "Size", "question": "Which size?", "multiSelect": False,
+                "options": [{"label": "Small", "description": "s"}, {"label": "Large", "description": "l"}]}]
+
+        def asking(questions):
+            call = "toolu_" + uuid.uuid4().hex
+            with transcript.open("a") as file:
+                file.write(text("assistant", [{"type": "tool_use", "id": call, "name": "AskUserQuestion",
+                                               "input": {"questions": questions}}]) + "\n")
+            return call
+
+        review = ("Review your answers\n ● Which color?\n   → Blue\n ● Which pets?\n   → Cat, Fish\n"
+                  " ● Which size?\n   → Medium please\n\n❯ 1. Submit answers\n  2. Cancel\n")
+        tabs = "←  ☐ Color  ☐ Pets  ☐ Size  ✔ Submit  →\nWhich color?\nWhich pets?\nWhich size?\n"
+        dialog = {"keys": [], "review": review, "row": "❯    Submit"}
+
+        def question_tmux(*args, **kwargs):
+            calls.append(args)
+            if args[0] == "capture-pane":
+                keys = dialog["keys"]
+                if keys[-2:] == ["Medium please", "Enter"]:
+                    return subprocess.CompletedProcess(args, 0, stdout=dialog["review"])
+                return subprocess.CompletedProcess(args, 0, stdout=tabs + (dialog["row"] if keys[-1:] == ["Down"] else "❯ 1. Red") + "\n")
+            if args[0] == "send-keys":
+                if dialog["keys"][-2:] == ["Medium please", "Enter"] and args[-1] == "1":
+                    registry("A", sa, "busy")
+                dialog["keys"].append(args[-1])
+                return subprocess.CompletedProcess(args, 0, stdout="")
+            return original_fake(*args, **kwargs)
+
+        good = [{"option": 2}, {"options": [3, 1]}, {"text": "Medium please"}]
+        ask_answer = lambda qid, answers, **kw: team.chat_answer(ids["C"], ids["A"], "alpha", question_id=qid, answers=answers, **kw)
+        with patch.object(team, "tmux", question_tmux):
+            def run(qid, answers, **kw):
+                log.write_text("")
+                registry("A", sa, "waiting")
+                dialog["keys"] = []
+                return ask_answer(qid, answers, **kw)
+
+            qid = asking(ask)
+            registry("A", sa)
+            assert "question" not in team.chat_read(ids["C"], ids["A"])  # only a waiting chat shows its question
+            registry("A", sa, "waiting")
+            read_back = team.chat_read(ids["C"], ids["A"], source="screen")
+            assert read_back["question"] == {"id": qid, "questions": ask}, read_back
+            assert "question" in team.chat_read(ids["C"], ids["A"]) and "cool" in "\n".join(team.seen_text)
+            result = run(qid, good)
+            assert result["result"] == "answered" and result["confirmed"], result
+            assert result["answers"] == ["Blue", "Cat, Fish", "Medium please"]
+            assert dialog["keys"] == ["2", "1", "3", "Down", "Down", "Down", "Down", "Enter", "3", "Medium please", "Enter", "1"], dialog["keys"]
+            assert ("send-keys", "-t", "%" + ids["A"], "-l", "--", "Medium please") in calls
+            assert json.loads(log.read_text().splitlines()[-1])["answers"] == result["answers"]
+            finish(qid)
+            # refusals before any key
+            standing = [dict(ask[0], options=[{"label": "Yes, and don't ask again", "description": ""}, ask[0]["options"][1]])]
+            for qs, qid_of, answers, why in (
+                    (ask, "toolu_old", good, "changed or is gone"), (ask, None, good[:2], "one answer per question"),
+                    (ask, None, [{"option": 3}, *good[1:]], "options 1-2"), (ask, None, [good[0], {"option": 1}, good[2]], "takes options"),
+                    (ask, None, [good[0], {"text": "Cat please"}, good[2]], "multiSelect"),
+                    (ask, None, [good[0], {"options": [1, 1]}, good[2]], "options 1-3"),
+                    (ask, None, [{"option": True}, *good[1:]], "options 1-2"),
+                    (ask, None, [good[0], good[1], {"text": "/clear"}], "ASCII letter"),
+                    (ask, None, [good[0], good[1], {"text": "Always allow this from now on"}], "standing"),
+                    (ask, None, [good[0], good[1], {"text": "Go ahead and merge it"}], "hard stop"),
+                    (ask, None, [good[0], good[1], {"option": 1, "text": "x"}], "Each answer"),
+                    (standing, None, [{"option": 1}], "standing permission"),
+                    ([dict(ask[0], question="Merge the PR now?")], None, [{"option": 2}], "hard stop"),
+                    ([dict(ask[0], options=[{"label": "Push to main", "description": ""}, ask[0]["options"][1]])], None, [{"option": 1}], "hard stop"),
+                    ([dict(ask[0], options=[ask[0]["options"][0], {"label": "Run terraform apply", "description": ""}])], None, [{"option": 2}], "hard stop")):
+                call = asking(qs)
+                result = run(qid_of or call, answers)
+                assert result["result"] == "refused" and why in result["reason"], (answers, result)
+                assert dialog["keys"] == [], (answers, dialog["keys"])
+                finish(call)
+            qid = asking(ask)
+            for extra, why in (({"option": 1}, "not both"), ({}, None)):
+                result = team.chat_answer(ids["C"], ids["A"], "alpha", question_id=qid, answers=good if extra else None, **extra)
+                assert result["result"] == "refused" and "not both" in result["reason"], result
+            # the review page shows something else: no Submit, the dialog stays open
+            dialog["review"] = review.replace("Medium please", "Large")
+            result = run(qid, good)
+            assert result["result"] == "partial" and "review page" in result["reason"] and dialog["keys"][-1] == "Enter", result
+            dialog["review"] = review
+            # the cursor did not reach the multiSelect Submit row
+            dialog["row"] = "❯ 4. [ ] Type something"
+            result = run(qid, good)
+            assert result["result"] == "partial" and "Submit row" in result["reason"], result
+            dialog["row"] = "❯    Submit"
+            # the question is not on screen
+            tabs_saved, tabs = tabs, "something else\n"
+            result = run(qid, good)
+            assert result["result"] == "refused" and "not on screen" in result["reason"] and not dialog["keys"], result
+            tabs = tabs_saved
+            finish(qid)
+        # chat_open: starts a detached plain-claude chat named in cwd; refuses bad names, folders and duplicates
+        log.write_text("")
+        opened = []
+        with patch.object(team, "launch", lambda *a, **kw: (opened.append((a, kw)), team.save(
+                {"id": a[1], "name": "claude chat", "backend": "claude", "role": "chat", "created": time.time()}))):
+            result = team.chat_open(ids["C"], "db fix", str(team.ROOT))
+            assert result["result"] == "opened" and opened[-1][0][0] == "claude", result
+            assert opened[-1][1] == {"cwd": str(team.ROOT.resolve()), "attach": False}
+            assert (team.directory(result["chat_id"]) / "name").read_text() == "db fix\n"
+            for name, cwd, why in (("alpha", str(team.ROOT), "already has that name"), ("-x", str(team.ROOT), "name is"),
+                                   ("a" * 61, str(team.ROOT), "name is"), ("ok", str(team.ROOT / "missing"), "not a directory"),
+                                   ("ok\nx", str(team.ROOT), "name is")):
+                result = team.chat_open(ids["C"], name, cwd)
+                assert result["result"] == "refused" and why in result["reason"], (name, result)
+            assert len(opened) == 1 and json.loads(log.read_text().splitlines()[-1])["tool"] == "chat_open"
         # goals survive in a file under the team home
         assert team.goal_load(ids["C"]) == {"goals": []}
         team.goal_save(ids["C"], [{"title": "Ship X", "owner": "alpha", "next": "review"}])
@@ -1047,7 +1160,7 @@ else:
                               env={**os.environ, "NVIM_TEAM_HOME": str(team.ROOT), "NVIM_TEAM_TMUX": "cmdtest-none"}) as server:
             out, _ = server.communicate(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n", timeout=20)
         return [t["name"] for t in json.loads(out.splitlines()[0])["result"]["tools"]]
-    assert tool_names("--commander", caller=ids["C"]) == ["chat_list", "chat_read", "chat_send", "chat_answer", "goal_save", "goal_load"]
+    assert tool_names("--commander", caller=ids["C"]) == ["chat_list", "chat_read", "chat_send", "chat_answer", "chat_open", "goal_save", "goal_load"]
     assert "chat_send" not in tool_names(caller=ids["C"]) and len(tool_names(caller=ids["A"])) == 7
     try:
         team.dispatch(ids["A"], "chat_list", {})
@@ -1082,7 +1195,7 @@ else:
     command = team.supervisor_command(team.read(ids["C"]), False)
     settings = json.loads(command[command.index("--settings") + 1])
     assert "ask" not in settings["permissions"] and {"mcp__nvim_team__" + n for n in
-        ("chat_list", "chat_read", "chat_send", "chat_answer", "goal_save", "goal_load")} == set(settings["permissions"]["allow"])
+        ("chat_list", "chat_read", "chat_send", "chat_answer", "chat_open", "goal_save", "goal_load")} == set(settings["permissions"]["allow"])
     assert {"Bash", "Write", "Edit", "Monitor", "Agent", "WebFetch", "WebSearch", "SendMessage"} <= set(settings["permissions"]["deny"])
     assert command[command.index("--tools") + 1] == "Skill,ToolSearch" and "--strict-mcp-config" in command
     assert Path(command[command.index("--append-system-prompt-file") + 1]).is_file()
