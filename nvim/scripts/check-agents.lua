@@ -51,11 +51,12 @@ package.loaded["util.claude_status"] = {
     done()
   end,
 }
+local fake_spend
 local real_budget = require("util.bifrost_budget")
 package.loaded["util.bifrost_budget"] = {
   is_bifrost = real_budget.is_bifrost,
   spend = function()
-    return nil
+    return fake_spend
   end,
   refresh = function() end,
   text = function()
@@ -376,10 +377,23 @@ end
 local function press(lhs)
   vim.api.nvim_feedkeys(vim.keycode(lhs), "xt", false)
 end
+fake_spend = "bifrost $35 spent / $865 left (1M)"
 agent.grid()
 assert(cards() == 4 and bar_text(0):find("grid 3×2", 1, true), bar_text(0))
 local usage = bar_text(-1)
 assert(usage:find("5h ▰▰▰▱▱▱▱▱ 34%", 1, true) and not usage:find("week", 1, true), usage)
+assert(usage:find(fake_spend, 1, true), usage)
+local budget_json = { text = "Bifrost", active = true, budgets = { { used = 34.6, remaining = 865.4, period = "1M" } } }
+real_budget.apply(budget_json)
+assert(real_budget.spend() == "bifrost $35 spent / $865 left (1M)", real_budget.spend())
+budget_json.stale = true
+real_budget.apply(budget_json)
+assert(real_budget.spend():find("%[stale%]$"))
+budget_json.active = false
+real_budget.apply(budget_json)
+assert(real_budget.spend() == "bifrost inactive")
+real_budget.apply(nil)
+assert(real_budget.spend() == nil)
 press("-")
 assert(cards() == 3 and bar_text(0):find("grid 3×1", 1, true) and bar_text(0):find("page 1/2", 1, true), bar_text(0))
 press("]")

@@ -261,8 +261,11 @@ def launch(backend, agent_id, role="chat", cwd=None, attach=True, clean_env=Fals
             launch_env = ["-e", "NVIM_TEAM_HOME=" + str(ROOT), "-e", "NVIM_TEAM_TMUX=" + TMUX_SOCKET, "-e", "COLORTERM=truecolor"]
             if record.get("config_dir") and not clean_env:
                 launch_env += ["-e", "CLAUDE_CONFIG_DIR=" + record["config_dir"]]
+            pane = shlex.join(command)
+            if clean_env:
+                pane = scrub_command() + pane
             tmux("new-session", "-d", "-s", name, "-c", record["cwd"], *launch_env,
-                 shlex.join(["zsh", "-c", shlex.join(command)]), env=env, check=True)
+                 shlex.join(["zsh", "-c", pane]), env=env, check=True)
             tmux("set-option", "-t", name, "status", "off", check=True)
             tmux("set-option", "-t", name, "history-limit", "50000", check=True)
         # Forward app mouse events (Claude), or scroll tmux history (Codex), including on reattach.
@@ -740,6 +743,17 @@ def worker_command(record, output):
     return ["zsh", "-c", shlex.join(args)]
 
 
+# Env a plain `claude` process must not inherit, so Bifrost cannot leak into a subscription chat.
+STRIPPED_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
+STRIPPED_KEYS = ("CLAUDE_CONFIG_DIR", "BIFROST_API_KEY", "CLAUDE_CODE_API_KEY_HELPER")
+
+
+def scrub_command():
+    """Shell prefix that unsets STRIPPED_* in the pane, since a running tmux server hands panes its own global env."""
+    patterns = " ".join(shlex.quote(prefix + "*") for prefix in STRIPPED_PREFIXES)
+    return f"unset -m {patterns}; unset {' '.join(STRIPPED_KEYS)}; "
+
+
 def worker_environment(record):
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
@@ -747,8 +761,7 @@ def worker_environment(record):
         # Plain Claude uses the normal account selected by the user's wrapper,
         # even when its supervisor was launched through the Bifrost wrapper.
         for key in list(env):
-            if key.startswith("ANTHROPIC_") or key.startswith("CLAUDE_CODE_USE_") or key in (
-                "CLAUDE_CONFIG_DIR", "BIFROST_API_KEY", "CLAUDE_CODE_API_KEY_HELPER"):
+            if key.startswith(STRIPPED_PREFIXES) or key in STRIPPED_KEYS:
                 env.pop(key)
     elif record.get("config_dir"):
         env["CLAUDE_CONFIG_DIR"] = record["config_dir"]

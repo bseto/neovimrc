@@ -1067,8 +1067,11 @@ else:
                 patch.object(team.os, "execvp"):
             for backend, clean in (("claude", True), ("claude-bf", False)):
                 team.launch(backend, str(uuid.uuid4()), attach=False, clean_env=clean)
-                env = next(c.kwargs["env"] for c in launch_tmux.call_args_list if c.args[0] == "new-session")
-                assert any(k.startswith("ANTHROPIC_") for k in env) != clean, (backend, sorted(env))
+                call = next(c for c in launch_tmux.call_args_list if c.args[0] == "new-session")
+                assert any(k.startswith("ANTHROPIC_") for k in call.kwargs["env"]) != clean, backend
+                pane = shlex.split(call.args[-1])[-1]
+                assert ("unset -m 'ANTHROPIC_*' 'CLAUDE_CODE_USE_*'" in pane) == clean, backend
+                assert ("unset CLAUDE_CONFIG_DIR BIFROST_API_KEY CLAUDE_CODE_API_KEY_HELPER" in pane) == clean
                 launch_tmux.reset_mock()
         # goals survive in a file under the team home
         assert team.goal_load(ids["C"]) == {"goals": []}
