@@ -37,6 +37,7 @@ TMUX_SOCKET = os.environ.get("NVIM_TEAM_TMUX", "nvim-agents")
 CLAUDE_DIR = Path.home() / ".claude"
 CODEX_DIR = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 COMMANDER_PROMPT = SCRIPT.with_name("commander.md")
+WORKSPACE = Path(os.environ.get("NVIM_TEAM_WORKSPACE", Path.home() / "Documents/workspace"))
 STATES = {"busy": "working", "idle": "idle", "waiting": "waiting", "shell": "shell", "exited": "exited"}
 CONFIG_REFUSAL = "The commander only serves the ~/.claude account; this chat runs with CLAUDE_CONFIG_DIR=%s. Start it from a work repo."
 COMMANDER = False  # set only by `mcp --commander`; the chat_* tools unlock from this, never from agent.json
@@ -1483,6 +1484,18 @@ def review_text(raw):
     return flat_text(" ".join(line.lstrip("●→ ") for line in lines[starts[-1] + 1:ends[-1]]))
 
 
+def question_screen(target, question_id):
+    """The screen, when this AskUserQuestion is the only pending call and no permission dialog is up.
+    A digit meant for a question tab must never land on a permission dialog."""
+    calls = pending_tools(target)
+    if [c["id"] for c in calls] != [question_id]:
+        raise ValueError("Another tool call is pending next to the question; dialog left open, ask Byron")
+    raw = SGR.sub("", screen(target["id"]))
+    if dialog_options(raw)[1]:
+        raise ValueError("A permission dialog is on screen; dialog left open, ask Byron")
+    return raw
+
+
 def answer_questions(caller, target, question_id, answers, entry):
     """Answer each tab of a pending AskUserQuestion, check the review page, then submit."""
     question = pending_question(target)
@@ -1496,6 +1509,7 @@ def answer_questions(caller, target, question_id, answers, entry):
         if any(ANSWER_STOP.search(t) or HARD_STOP.search(t) for t in [q.get("question", ""), q.get("header", ""), *picked]):
             raise ValueError(f"Question {q.get('header')!r} touches a hard stop (merge, apply, delete, push to main, ...); ask Byron")
     entry["answers"] = [shown for _, shown, _ in plans]
+    question_screen(target, question_id)
     rate_check(caller, target["id"], per_chat=False)
     time.sleep(1)  # second read: the same question must still be up
     again = resolve_chat(caller, target["id"], exact=True)
@@ -1505,7 +1519,7 @@ def answer_questions(caller, target, question_id, answers, entry):
     if pane_in_mode(pane):
         raise ValueError("The chat's pane is in tmux copy mode")
     for index, (q, (keys, _, _)) in enumerate(zip(questions, plans)):
-        if flat_text(q.get("question", ""))[:60] not in flat_text(SGR.sub("", screen(target["id"]))):
+        if flat_text(q.get("question", ""))[:60] not in flat_text(question_screen(target, question_id)):
             raise ValueError(f"Question {index + 1} is not on screen; dialog left open")
         entry["result"] = "partial"
         for key in keys:
@@ -1517,7 +1531,7 @@ def answer_questions(caller, target, question_id, answers, entry):
             tmux("send-keys", "-t", pane, *(key if isinstance(key, tuple) else (key,)), check=True)
             time.sleep(0.4)
     expected = flat_text(" ".join(f"{q.get('question', '')} {shown}" for q, (_, shown, _) in zip(questions, plans)))
-    shown_review = review_text(screen(target["id"]))
+    shown_review = review_text(question_screen(target, question_id))
     if shown_review != expected:
         raise ValueError(f"The review page does not show the planned answers; dialog left open on it: {shown_review!r}")
     tmux("send-keys", "-t", pane, "1", check=True)
@@ -1599,7 +1613,11 @@ def chat_open(caller, name, cwd):
         folder = Path(os.path.expanduser(str(cwd))).resolve()
         if not folder.is_dir():
             raise ValueError(f"cwd {cwd!r} is not a directory")
-        if any(c["name"] == name for c in live_chats(caller)):
+        chats = live_chats(caller)
+        # A trusted folder loads its .claude settings and hooks, so only workspace repos or a live chat's folder.
+        if WORKSPACE.resolve() not in folder.parents and str(folder) not in {c["cwd"] for c in chats}:
+            raise ValueError(f"cwd must be under {WORKSPACE} or the folder of a live chat; ask Byron for others")
+        if any(c["name"] == name for c in chats):
             raise ValueError("A live chat already has that name")
         rate_check(caller, None, per_chat=False)
         agent_id = entry["chat_id"] = str(uuid.uuid4())
@@ -1964,7 +1982,7 @@ COMMANDER_TOOLS = [
               "options": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1, "maximum": 4}},
               "text": STRING}, "minProperties": 1, "maxProperties": 1, "additionalProperties": False}}},
          ["chat_id", "chat_name"]),
-    tool("chat_open", "Start a new Claude chat (plain claude) named name, in directory cwd. Use it only when Byron asks for a new chat. It starts in the background; Byron opens it from the chat picker. A folder Claude has not trusted yet shows a trust prompt that only Byron answers. Rate-limited with sends and answers; every open is logged.",
+    tool("chat_open", "Start a new Claude chat (plain claude) named name, in directory cwd (under ~/Documents/workspace, or the folder of a live chat). Use it only when Byron asks for a new chat. It starts in the background; Byron opens it from the chat picker. A folder Claude has not trusted yet shows a trust prompt that only Byron answers. Rate-limited with sends and answers; every open is logged.",
          {"name": STRING, "cwd": STRING}, ["name", "cwd"]),
     tool("goal_save", "Replace the saved list of Byron's active goals. Call it whenever a goal starts, changes or ends. The list survives a commander restart.",
          {"goals": {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {

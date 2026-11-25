@@ -974,6 +974,8 @@ else:
                 dialog["keys"] = []
                 return ask_answer(qid, answers, **kw)
 
+            for call in team.pending_tools(team.resolve_chat(ids["C"], ids["A"])):
+                finish(call["id"])
             qid = asking(ask)
             registry("A", sa)
             assert "question" not in team.chat_read(ids["C"], ids["A"])  # only a waiting chat shows its question
@@ -1028,11 +1030,20 @@ else:
             result = run(qid, good)
             assert result["result"] == "refused" and "not on screen" in result["reason"] and not dialog["keys"], result
             tabs = tabs_saved
+            # a digit must never land on a permission dialog: another pending call, or a dialog on screen, refuses
+            bash = pending("printf x > notes.txt")
+            result = run(qid, good)
+            assert result["result"] == "refused" and "Another tool call" in result["reason"] and not dialog["keys"], result
+            finish(bash)
+            tabs_saved, tabs = tabs, tabs + "Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n"
+            result = run(qid, good)
+            assert result["result"] == "refused" and "permission dialog" in result["reason"] and not dialog["keys"], result
+            tabs = tabs_saved
             finish(qid)
         # chat_open: starts a detached plain-claude chat named in cwd; refuses bad names, folders and duplicates
         log.write_text("")
         opened = []
-        with patch.object(team, "launch", lambda *a, **kw: (opened.append((a, kw)), team.save(
+        with patch.object(team, "WORKSPACE", team.ROOT.parent), patch.object(team, "launch", lambda *a, **kw: (opened.append((a, kw)), team.save(
                 {"id": a[1], "name": "claude chat", "backend": "claude", "role": "chat", "created": time.time()}))):
             result = team.chat_open(ids["C"], "db fix", str(team.ROOT))
             assert result["result"] == "opened" and opened[-1][0][0] == "claude", result
@@ -1040,7 +1051,7 @@ else:
             assert (team.directory(result["chat_id"]) / "name").read_text() == "db fix\n"
             for name, cwd, why in (("alpha", str(team.ROOT), "already has that name"), ("-x", str(team.ROOT), "name is"),
                                    ("a" * 61, str(team.ROOT), "name is"), ("ok", str(team.ROOT / "missing"), "not a directory"),
-                                   ("ok\nx", str(team.ROOT), "name is")):
+                                   ("ok\nx", str(team.ROOT), "name is"), ("ok", "/", "must be under")):
                 result = team.chat_open(ids["C"], name, cwd)
                 assert result["result"] == "refused" and why in result["reason"], (name, result)
             assert len(opened) == 1 and json.loads(log.read_text().splitlines()[-1])["tool"] == "chat_open"
